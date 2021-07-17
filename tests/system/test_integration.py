@@ -9,16 +9,6 @@ from es_helper import index_smap, index_metric, index_transaction, index_error, 
 @integration_test
 class Test(ElasticTest):
 
-    def test_onboarding_doc(self):
-        """
-        This test starts the beat and checks that the onboarding doc has been published to ES
-        """
-        wait_until(lambda: self.es.indices.exists(index_onboarding), name="onboarding index created")
-        wait_until(lambda: (self.es.count(index=index_onboarding)['count'] == 1))
-
-        # Makes sure no error or warnings were logged
-        self.assert_no_logged_warnings()
-
     def test_template(self):
         """
         This test starts the beat and checks that the template has been loaded to ES
@@ -89,11 +79,13 @@ class Test(ElasticTest):
         self.check_backend_error_sourcemap(index_error, count=4)
 
     def test_load_docs_with_template_and_add_metricset(self):
-        self.load_docs_with_template(self.get_metricset_payload_path(), self.intake_url, 'metric', 2)
+        # NOTE(axw) this test is redundant with systemtest.TestApprovedMetrics,
+        # but we use the output of this test for generating documentation.
+        self.load_docs_with_template(self.get_metricset_payload_path(), self.intake_url, 'metric', 5)
         self.assert_no_logged_warnings()
 
         # compare existing ES documents for metricsets with new ones
-        metricset_docs = self.wait_for_events('metric', 2, index=index_metric)
+        metricset_docs = self.wait_for_events('metric', 5, index=index_metric)
         self.approve_docs('metricset', metricset_docs)
 
 
@@ -106,14 +98,14 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
                                      self.backend_intake_url,
                                      'error',
                                      4)
-        self.check_library_frames({"true": 1, "false": 1, "empty": 2}, index_error)
+        self.check_library_frames({"true": 1, "false": 0, "empty": 3}, index_error)
 
     def test_rum_error(self):
         self.load_docs_with_template(self.get_error_payload_path(),
                                      self.intake_url,
                                      'error',
                                      1)
-        self.check_library_frames({"true": 5, "false": 1, "empty": 0}, index_error)
+        self.check_library_frames({"true": 5, "false": 0, "empty": 1}, index_error)
 
     def test_backend_transaction(self):
         # for backend events library_frame information should not be changed,
@@ -129,7 +121,7 @@ class EnrichEventIntegrationTest(ClientSideElasticTest):
                                      self.intake_url,
                                      'transaction',
                                      2)
-        self.check_library_frames({"true": 1, "false": 1, "empty": 0}, index_span)
+        self.check_library_frames({"true": 1, "false": 0, "empty": 1}, index_span)
 
     def test_enrich_backend_event(self):
         self.load_docs_with_template(self.get_backend_transaction_payload_path(),
@@ -315,18 +307,6 @@ class ExpvarCustomUrlIntegrationTest(ExpvarBaseTest):
 
 
 @integration_test
-class MetricsIntegrationTest(ElasticTest):
-    def test_metric_doc(self):
-        self.load_docs_with_template(self.get_metricset_payload_path(), self.intake_url, 'metric', 2)
-        mappings = self.es.indices.get_field_mapping(
-            index=index_metric, fields="system.process.cpu.total.norm.pct")
-        expected_type = "scaled_float"
-        doc = mappings[self.ilm_index(index_metric)]["mappings"]
-        actual_type = doc["system.process.cpu.total.norm.pct"]["mapping"]["pct"]["type"]
-        assert expected_type == actual_type, "want: {}, got: {}".format(expected_type, actual_type)
-
-
-@integration_test
 class ExperimentalBaseTest(ElasticTest):
     def check_experimental_key_indexed(self, experimental):
         self.load_docs_with_template(self.get_payload_path("experimental.ndjson"),
@@ -343,7 +323,7 @@ class ExperimentalBaseTest(ElasticTest):
             # check whether or not top level key `experimental` has been indexed
             rs = self.es.search(index=idx, body={"query": {"exists": {"field": 'experimental'}}})
             ct = 1 if experimental else 0
-            assert rs['hits']['total']['value'] == ct
+            assert rs['hits']['total']['value'] == ct, idx
 
 
 @integration_test

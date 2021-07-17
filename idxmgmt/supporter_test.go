@@ -15,23 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//// Licensed to Elasticsearch B.V. under one or more contributor
-//// license agreements. See the NOTICE file distributed with
-//// this work for additional information regarding copyright
-//// ownership. Elasticsearch B.V. licenses this file to you under
-//// the Apache License, Version 2.0 (the "License"); you may
-//// not use this file except in compliance with the License.
-//// You may obtain a copy of the License at
-////
-////     http://www.apache.org/licenses/LICENSE-2.0
-////
-//// Unless required by applicable law or agreed to in writing,
-//// software distributed under the License is distributed on an
-//// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-//// KIND, either express or implied.  See the License for the
-//// specific language governing permissions and limitations
-//// under the License.
-//
 package idxmgmt
 
 import (
@@ -148,26 +131,26 @@ func TestIndexSupport_BuildSelector(t *testing.T) {
 			withIlm: "apm-7.0.0-sourcemap",
 			fields:  common.MapStr{"processor.event": "sourcemap"},
 		},
-		"MetaInformationAlias": {
+		"MetaInformationAlia-lowercased": {
 			noIlm:   "apm-7.0.0-meta",
 			withIlm: "apm-7.0.0-meta", //meta overwrites ilm
 			fields:  common.MapStr{"processor.event": "span"},
-			meta:    common.MapStr{"alias": "apm-7.0.0-meta", "index": "test-123"},
+			meta:    common.MapStr{"alias": "APM-7.0.0-meta", "index": "test-123"},
 			cfg:     common.MapStr{"output.elasticsearch.index": "apm-customized"},
 		},
 		"MetaInformationIndex": {
 			noIlm:   fmt.Sprintf("apm-7.0.0-%s", day),
 			withIlm: fmt.Sprintf("apm-7.0.0-%s", day), //meta overwrites ilm
 			fields:  common.MapStr{"processor.event": "span"},
-			meta:    common.MapStr{"index": "apm-7.0.0"},
+			meta:    common.MapStr{"index": "APM-7.0.0"},
 			cfg:     common.MapStr{"output.elasticsearch.index": "apm-customized"},
 		},
-		"CustomIndex": {
+		"CustomIndex-lowercased": {
 			noIlm:   "apm-customized",
 			withIlm: "apm-7.0.0-metric", //custom index ignored when ilm enabled
 			ilmAuto: "apm-customized",   //custom respected for ilm auto
 			fields:  common.MapStr{"processor.event": "metric"},
-			cfg:     common.MapStr{"output.elasticsearch.index": "apm-customized"},
+			cfg:     common.MapStr{"output.elasticsearch.index": "APM-customized"},
 		},
 		"DifferentCustomIndices": {
 			noIlm:   fmt.Sprintf("apm-7.0.0-%s", day),
@@ -203,7 +186,8 @@ func TestIndexSupport_BuildSelector(t *testing.T) {
 			// create initialized supporter and selector
 
 			supporter := defaultSupporter(t, test.cfg)
-			supporter.setIlmState(handler)
+			err := supporter.Manager(handler, nil).Setup(libidxmgmt.LoadModeDisabled, libidxmgmt.LoadModeDisabled)
+			require.NoError(t, err)
 
 			s, err := supporter.BuildSelector(nil)
 			require.NoError(t, err)
@@ -225,11 +209,6 @@ func TestIndexSupport_BuildSelector(t *testing.T) {
 		test.expected = test.withIlm
 		checkIndexSelector(t, "ILMTrueSupported"+name, test, ilmSupportedHandler)
 
-		//ilm true but unsupported
-		test.cfg["apm-server.ilm.enabled"] = true
-		test.expected = test.noIlm
-		checkIndexSelector(t, "ILMTrueUnsupported"+name, test, ilmUnsupportedHandler)
-
 		//ilm=false
 		test.cfg["apm-server.ilm.enabled"] = false
 		test.expected = test.noIlm
@@ -248,20 +227,6 @@ func TestIndexSupport_BuildSelector(t *testing.T) {
 		test.expected = test.noIlm
 		checkIndexSelector(t, "ILMAutoUnsupported"+name, test, ilmUnsupportedHandler)
 	}
-
-	t.Run("uninitializedSupporter", func(t *testing.T) {
-		// create initialized supporter and selector
-		supporter := defaultSupporter(t, common.MapStr{})
-
-		s, err := supporter.BuildSelector(common.MustNewConfigFrom(common.MapStr{}))
-		require.NoError(t, err)
-
-		// test selected index
-		idx, err := s.Select(testEvent(common.MapStr{}, common.MapStr{}))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "setup not finished")
-		assert.Equal(t, "", idx)
-	})
 }
 
 func testEvent(fields, meta common.MapStr) *beat.Event {

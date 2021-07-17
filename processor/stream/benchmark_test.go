@@ -21,61 +21,50 @@ import (
 	"bytes"
 	"context"
 	"io/ioutil"
-	"math"
 	"path/filepath"
 	"testing"
 
-	"golang.org/x/time/rate"
-
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/model"
-	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
 )
 
 func BenchmarkBackendProcessor(b *testing.B) {
-	processor := BackendProcessor(&config.Config{MaxEventSize: 300 * 1024})
+	processor := BackendProcessor(config.DefaultConfig())
 	files, _ := filepath.Glob(filepath.FromSlash("../../testdata/intake-v2/*.ndjson"))
 	benchmarkStreamProcessor(b, processor, files)
 }
 
 func BenchmarkRUMV3Processor(b *testing.B) {
-	tcfg := &transform.Config{}
-	processor := RUMV3Processor(&config.Config{MaxEventSize: 300 * 1024}, tcfg)
+	processor := RUMV3Processor(config.DefaultConfig())
 	files, _ := filepath.Glob(filepath.FromSlash("../../testdata/intake-v3/rum_*.ndjson"))
 	benchmarkStreamProcessor(b, processor, files)
 }
 
 func benchmarkStreamProcessor(b *testing.B, processor *Processor, files []string) {
-	report := func(ctx context.Context, p publish.PendingReq) error {
-		return nil
-	}
-	//ensure to not hit rate limit as blocking wait would be measured otherwise
-	rl := rate.NewLimiter(rate.Limit(math.MaxFloat64-1), math.MaxInt32)
+	const batchSize = 10
+	batchProcessor := nopBatchProcessor{}
+	benchmark := func(b *testing.B, filename string) {
+		data, err := ioutil.ReadFile(filename)
+		if err != nil {
+			b.Error(err)
+		}
+		r := bytes.NewReader(data)
+		b.ReportAllocs()
+		b.SetBytes(int64(len(data)))
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			r.Reset(data)
+			b.StartTimer()
 
-	benchmark := func(filename string, rl *rate.Limiter) func(b *testing.B) {
-		return func(b *testing.B) {
-			data, err := ioutil.ReadFile(filename)
-			if err != nil {
-				b.Error(err)
-			}
-			r := bytes.NewReader(data)
-			b.ReportAllocs()
-			b.SetBytes(int64(len(data)))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				r.Reset(data)
-				b.StartTimer()
-				processor.HandleStream(context.Background(), rl, &model.Metadata{}, r, report)
-			}
+			var result Result
+			processor.HandleStream(context.Background(), &model.Metadata{}, r, batchSize, batchProcessor, &result)
 		}
 	}
 
 	for _, f := range files {
 		b.Run(filepath.Base(f), func(b *testing.B) {
-			b.Run("NoRateLimit", benchmark(f, nil))
-			b.Run("WithRateLimit", benchmark(f, rl))
+			benchmark(b, f)
 		})
 	}
 }

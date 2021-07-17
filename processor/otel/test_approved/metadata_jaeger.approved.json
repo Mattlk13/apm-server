@@ -1,25 +1,22 @@
 {
     "events": [
         {
-            "@timestamp": "2019-12-16T12:46:58.000768068Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "ephemeral_id": "xxf0",
                 "name": "Jaeger/C++",
                 "version": "3.2.1"
             },
+            "event": {
+                "outcome": "unknown"
+            },
             "host": {
                 "hostname": "host-foo",
-                "ip": "17.0.10.123",
-                "name": "host-foo"
+                "ip": "17.0.10.123"
             },
             "labels": {
-                "a": "b",
-                "c": "d",
                 "foo": "bar",
-                "resource": "request"
-            },
-            "process": {
-                "pid": 107892
+                "peer_port": "80"
             },
             "processor": {
                 "event": "transaction",
@@ -29,23 +26,19 @@
                 "language": {
                     "name": "C++"
                 },
-                "name": "foo",
-                "node": {
-                    "name": "host-foo"
-                }
+                "name": "foo"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
+                "id": "00000000000000000000000046467830"
             },
             "transaction": {
                 "duration": {
                     "us": 0
                 },
-                "id": "41414646",
-                "result": "Success",
+                "id": "0000000041414646",
                 "sampled": true,
                 "type": "custom"
             }

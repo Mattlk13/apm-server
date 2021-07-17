@@ -1,14 +1,16 @@
 {
     "events": [
         {
-            "@timestamp": "0001-01-01T00:00:00Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
             },
+            "event": {
+                "outcome": "unknown"
+            },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
+                "hostname": "host-abc"
             },
             "labels": {
                 "component": "amqp"
@@ -21,17 +23,16 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
+            },
+            "timestamp": {
+                "us": 1576500418000768
             },
             "transaction": {
                 "duration": {
                     "us": 0
                 },
                 "id": "",
-                "result": "Success",
                 "sampled": true,
                 "type": "amqp"
             }

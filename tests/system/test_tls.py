@@ -1,18 +1,19 @@
+from apmserver import TimeoutError, integration_test
+from apmserver import ServerBaseTest
 import os
 import requests
 import shutil
 import ssl
 import subprocess
 import socket
-
-from nose.tools import raises
+import pytest
 from requests.packages.urllib3.exceptions import SubjectAltNameWarning
 requests.packages.urllib3.disable_warnings(SubjectAltNameWarning)
 
-from apmserver import ServerBaseTest
-from apmserver import TimeoutError, integration_test
 
 INTEGRATION_TESTS = os.environ.get('INTEGRATION_TESTS', False)
+
+requests.packages.urllib3.disable_warnings(SubjectAltNameWarning)
 
 
 @integration_test
@@ -106,9 +107,9 @@ class TestSSLBadPassphraseTest(TestSecureServerBaseTest):
     def ssl_overrides(self):
         return {"ssl_key_passphrase": "invalid"}
 
-    @raises(TimeoutError)
     def setUp(self):
-        super(TestSecureServerBaseTest, self).setUp()
+        with pytest.raises(TimeoutError):
+            super(TestSecureServerBaseTest, self).setUp()
 
 
 @integration_test
@@ -137,15 +138,15 @@ class TestSSLEnabledOptionalClientAuthenticationTest(TestSecureServerBaseTest):
     def test_https_no_certificate_ok(self):
         self.ssl_connect()
 
-    @raises(ssl.SSLError)
     def test_https_verify_cert_if_given(self):
         # invalid certificate
-        self.ssl_connect(cert=self.simple_cert, key=self.simple_key)
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect(cert=self.simple_cert, key=self.simple_key)
 
-    @raises(ssl.SSLError)
     def test_https_self_signed_cert(self):
         # CA is not configured server side, so self signed certs are not valid
-        self.ssl_connect(cert=self.client_cert, key=self.client_key)
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect(cert=self.client_cert, key=self.client_key)
 
 
 @integration_test
@@ -153,15 +154,15 @@ class TestSSLEnabledOptionalClientAuthenticationWithCATest(TestSecureServerBaseT
     def ssl_overrides(self):
         return {"ssl_certificate_authorities": self.ca_cert}
 
-    @raises(ssl.SSLError)
     def test_https_no_certificate(self):
         # since CA is configured, client auth is required
-        self.ssl_connect()
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect()
 
-    @raises(ssl.SSLError)
     def test_https_verify_cert_if_given(self):
         # invalid certificate
-        self.ssl_connect(cert=self.simple_cert, key=self.simple_key)
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect(cert=self.simple_cert, key=self.simple_key)
 
     def test_https_auth_cert_ok(self):
         self.ssl_connect(cert=self.client_cert, key=self.client_key)
@@ -173,13 +174,13 @@ class TestSSLEnabledRequiredClientAuthenticationTest(TestSecureServerBaseTest):
         return {"ssl_client_authentication": "required",
                 "ssl_certificate_authorities": self.ca_cert}
 
-    @raises(ssl.SSLError)
     def test_https_no_cert_fails(self):
-        self.ssl_connect()
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect()
 
-    @raises(ssl.SSLError)
     def test_https_invalid_cert_fails(self):
-        self.ssl_connect(cert=self.simple_cert, key=self.simple_key)
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect(cert=self.simple_cert, key=self.simple_key)
 
     def test_https_auth_cert_ok(self):
         self.ssl_connect(cert=self.client_cert, key=self.client_key)
@@ -190,11 +191,11 @@ class TestSSLDefaultSupportedProcotolsTest(TestSecureServerBaseTest):
     def ssl_overrides(self):
         return {"ssl_certificate_authorities": self.ca_cert}
 
-    @raises(ssl.SSLError)
     def test_tls_v1_0(self):
-        self.ssl_connect(min_version=ssl.TLSVersion.TLSv1,
-                         max_version=ssl.TLSVersion.TLSv1,
-                         cert=self.server_cert, key=self.server_key)
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect(min_version=ssl.TLSVersion.TLSv1,
+                             max_version=ssl.TLSVersion.TLSv1,
+                             cert=self.server_cert, key=self.server_key)
 
     def test_tls_v1_1(self):
         self.ssl_connect(min_version=ssl.TLSVersion.TLSv1_1,
@@ -219,18 +220,18 @@ class TestSSLSupportedProcotolsTest(TestSecureServerBaseTest):
         return {"ssl_supported_protocols": ["TLSv1.2"],
                 "ssl_certificate_authorities": self.ca_cert}
 
-    @raises(ssl.SSLError)
     def test_tls_v1_1(self):
-        self.ssl_connect(min_version=ssl.TLSVersion.TLSv1_1,
-                         max_version=ssl.TLSVersion.TLSv1_1,
-                         cert=self.server_cert, key=self.server_key)
-
-    @raises(ssl.SSLError)
-    def test_tls_v1_3(self):
-        if ssl.HAS_TLSv1_3:
-            self.ssl_connect(min_version=ssl.TLSVersion.TLSv1_3,
-                             max_version=ssl.TLSVersion.TLSv1_3,
+        with pytest.raises(ssl.SSLError):
+            self.ssl_connect(min_version=ssl.TLSVersion.TLSv1_1,
+                             max_version=ssl.TLSVersion.TLSv1_1,
                              cert=self.server_cert, key=self.server_key)
+
+    def test_tls_v1_3(self):
+        with pytest.raises(ssl.SSLError):
+            if ssl.HAS_TLSv1_3:
+                self.ssl_connect(min_version=ssl.TLSVersion.TLSv1_3,
+                                 max_version=ssl.TLSVersion.TLSv1_3,
+                                 cert=self.server_cert, key=self.server_key)
 
     def test_tls_v1_2(self):
         self.ssl_connect(cert=self.server_cert, key=self.server_key)
@@ -255,14 +256,14 @@ class TestSSLSupportedCiphersTest(TestSecureServerBaseTest):
 
     def test_https_unsupported_cipher(self):
         # client only offers unsupported cipher
-        with self.assertRaisesRegexp(ssl.SSLError, 'SSLV3_ALERT_HANDSHAKE_FAILURE'):
+        with self.assertRaisesRegex(ssl.SSLError, 'SSLV3_ALERT_HANDSHAKE_FAILURE'):
             self.ssl_connect(max_version=ssl.TLSVersion.TLSv1_2,
                              ciphers='ECDHE-RSA-AES256-SHA384',
                              cert=self.server_cert, key=self.server_key)
 
     def test_https_no_cipher_selected(self):
         # client provides invalid cipher
-        with self.assertRaisesRegexp(ssl.SSLError, 'No cipher can be selected'):
+        with self.assertRaisesRegex(ssl.SSLError, 'No cipher can be selected'):
             self.ssl_connect(max_version=ssl.TLSVersion.TLSv1_2,
                              ciphers='AES1sd28-CCM8',
                              cert=self.server_cert, key=self.server_key)

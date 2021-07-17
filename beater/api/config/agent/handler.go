@@ -30,22 +30,20 @@ import (
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
 	"github.com/elastic/apm-server/agentcfg"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
 	"github.com/elastic/apm-server/convert"
-	"github.com/elastic/apm-server/kibana"
 )
 
 const (
 	errMaxAgeDuration = 5 * time.Minute
 
-	msgInvalidQuery               = "invalid query"
-	msgKibanaDisabled             = "disabled Kibana configuration"
-	msgKibanaVersionNotCompatible = "not a compatible Kibana version"
-	msgMethodUnsupported          = "method not supported"
-	msgNoKibanaConnection         = "unable to retrieve connection to Kibana"
-	msgServiceUnavailable         = "service unavailable"
+	msgInvalidQuery       = "invalid query"
+	msgMethodUnsupported  = "method not supported"
+	msgNoKibanaConnection = "unable to retrieve connection to Kibana"
+	msgServiceUnavailable = "service unavailable"
 )
 
 var (
@@ -53,105 +51,118 @@ var (
 	MonitoringMap = request.DefaultMonitoringMapForRegistry(registry)
 	registry      = monitoring.Default.NewRegistry("apm-server.acm")
 
-	errMsgKibanaDisabled     = errors.New(msgKibanaDisabled)
-	errMsgNoKibanaConnection = errors.New(msgNoKibanaConnection)
-	errCacheControl          = fmt.Sprintf("max-age=%v, must-revalidate", errMaxAgeDuration.Seconds())
-
-	// rumAgents keywords (new and old)
-	rumAgents = []string{"rum-js", "js-base"}
+	errCacheControl = fmt.Sprintf("max-age=%v, must-revalidate", errMaxAgeDuration.Seconds())
 )
 
-// Handler returns a request.Handler for managing agent central configuration requests.
-func Handler(client kibana.Client, config *config.AgentConfig) request.Handler {
+type handler struct {
+	f agentcfg.Fetcher
+
+	allowAnonymousAgents                    []string
+	cacheControl, defaultServiceEnvironment string
+}
+
+func NewHandler(
+	f agentcfg.Fetcher,
+	config config.KibanaAgentConfig,
+	defaultServiceEnvironment string,
+	allowAnonymousAgents []string,
+) request.Handler {
+	if f == nil {
+		panic("fetcher must not be nil")
+	}
 	cacheControl := fmt.Sprintf("max-age=%v, must-revalidate", config.Cache.Expiration.Seconds())
-	fetcher := agentcfg.NewFetcher(client, config.Cache.Expiration)
+	h := &handler{
+		f:                         f,
+		cacheControl:              cacheControl,
+		defaultServiceEnvironment: defaultServiceEnvironment,
+		allowAnonymousAgents:      allowAnonymousAgents,
+	}
 
-	return func(c *request.Context) {
-		// error handling
-		c.Header().Set(headers.CacheControl, errCacheControl)
+	return h.Handle
+}
 
-		ok := c.RateLimiter == nil || c.RateLimiter.Allow()
-		if !ok {
-			c.Result.SetDefault(request.IDResponseErrorsRateLimit)
-			c.Write()
-			return
-		}
+// Handler implements request.Handler for managing agent central configuration
+// requests.
+func (h *handler) Handle(c *request.Context) {
+	// error handling
+	c.Header().Set(headers.CacheControl, errCacheControl)
 
-		if valid := validateClient(c, client, c.Authorization.IsAuthorizationConfigured()); !valid {
-			c.Write()
-			return
-		}
+	query, queryErr := buildQuery(c)
+	if queryErr != nil {
+		extractQueryError(c, queryErr)
+		c.Write()
+		return
+	}
+	if query.Service.Environment == "" {
+		query.Service.Environment = h.defaultServiceEnvironment
+	}
 
-		query, queryErr := buildQuery(c)
-		if queryErr != nil {
-			extractQueryError(c, queryErr, c.Authorization.IsAuthorizationConfigured())
-			c.Write()
-			return
-		}
-
-		result, err := fetcher.Fetch(c.Request.Context(), query)
-		if err != nil {
-			apm.CaptureError(c.Request.Context(), err).Send()
-			extractInternalError(c, err, c.Authorization.IsAuthorizationConfigured())
-			c.Write()
-			return
-		}
-
-		// configuration successfully fetched
-		c.Header().Set(headers.CacheControl, cacheControl)
-		c.Header().Set(headers.Etag, fmt.Sprintf("\"%s\"", result.Source.Etag))
-		c.Header().Set(headers.AccessControlExposeHeaders, headers.Etag)
-
-		if result.Source.Etag == ifNoneMatch(c) {
-			c.Result.SetDefault(request.IDResponseValidNotModified)
+	// Only service, and not agent, is known for config queries.
+	// For anonymous/untrusted agents, we filter the results using
+	// query.InsecureAgents below.
+	authResource := auth.Resource{ServiceName: query.Service.Name}
+	if err := auth.Authorize(c.Request.Context(), auth.ActionAgentConfig, authResource); err != nil {
+		if errors.Is(err, auth.ErrUnauthorized) {
+			id := request.IDResponseErrorsForbidden
+			status := request.MapResultIDToStatus[id]
+			c.Result.Set(id, status.Code, err.Error(), nil, nil)
 		} else {
-			c.Result.SetWithBody(request.IDResponseValidOK, result.Source.Settings)
+			c.Result.SetDefault(request.IDResponseErrorsServiceUnavailable)
+			c.Result.Err = err
 		}
 		c.Write()
+		return
 	}
-}
-
-func validateClient(c *request.Context, client kibana.Client, withAuth bool) bool {
-	if client == nil {
-		c.Result.Set(request.IDResponseErrorsServiceUnavailable,
-			http.StatusServiceUnavailable,
-			msgKibanaDisabled,
-			msgKibanaDisabled,
-			errMsgKibanaDisabled)
-		return false
+	if c.Authentication.Method == auth.MethodAnonymous {
+		// Unauthenticated client, restrict results.
+		query.InsecureAgents = h.allowAnonymousAgents
 	}
 
-	if supported, err := client.SupportsVersion(c.Request.Context(), agentcfg.KibanaMinVersion, true); !supported {
-		if err != nil {
-			c.Result.Set(request.IDResponseErrorsServiceUnavailable,
+	result, err := h.f.Fetch(c.Request.Context(), query)
+	if err != nil {
+		var verr *agentcfg.ValidationError
+		if errors.As(err, &verr) {
+			body := verr.Body()
+			if strings.HasPrefix(body, agentcfg.ErrMsgKibanaVersionNotCompatible) {
+				body = authErrMsg(c, body, agentcfg.ErrMsgKibanaVersionNotCompatible)
+			}
+			c.Result.Set(
+				request.IDResponseErrorsServiceUnavailable,
 				http.StatusServiceUnavailable,
-				msgNoKibanaConnection,
-				msgNoKibanaConnection,
-				errMsgNoKibanaConnection)
-			return false
+				verr.Keyword(),
+				body,
+				verr,
+			)
+		} else {
+			apm.CaptureError(c.Request.Context(), err).Send()
+			extractInternalError(c, err)
 		}
-
-		version, _ := client.GetVersion(c.Request.Context())
-
-		errMsg := fmt.Sprintf("%s: min version %+v, configured version %+v",
-			msgKibanaVersionNotCompatible, agentcfg.KibanaMinVersion, version.String())
-		body := authErrMsg(errMsg, msgKibanaVersionNotCompatible, withAuth)
-		c.Result.Set(request.IDResponseErrorsServiceUnavailable,
-			http.StatusServiceUnavailable,
-			msgKibanaVersionNotCompatible,
-			body,
-			errors.New(errMsg))
-		return false
+		c.Write()
+		return
 	}
-	return true
+
+	// configuration successfully fetched
+	c.Header().Set(headers.CacheControl, h.cacheControl)
+	c.Header().Set(headers.Etag, fmt.Sprintf("\"%s\"", result.Source.Etag))
+	c.Header().Set(headers.AccessControlExposeHeaders, headers.Etag)
+
+	if result.Source.Etag == ifNoneMatch(c) {
+		c.Result.SetDefault(request.IDResponseValidNotModified)
+	} else {
+		c.Result.SetWithBody(request.IDResponseValidOK, result.Source.Settings)
+	}
+	c.Write()
 }
 
-func buildQuery(c *request.Context) (query agentcfg.Query, err error) {
+func buildQuery(c *request.Context) (agentcfg.Query, error) {
 	r := c.Request
 
+	var query agentcfg.Query
 	switch r.Method {
 	case http.MethodPost:
-		err = convert.FromReader(r.Body, &query)
+		if err := convert.FromReader(r.Body, &query); err != nil {
+			return query, err
+		}
 	case http.MethodGet:
 		params := r.URL.Query()
 		query = agentcfg.Query{
@@ -161,41 +172,40 @@ func buildQuery(c *request.Context) (query agentcfg.Query, err error) {
 			},
 		}
 	default:
-		err = errors.Errorf("%s: %s", msgMethodUnsupported, r.Method)
+		if err := errors.Errorf("%s: %s", msgMethodUnsupported, r.Method); err != nil {
+			return query, err
+		}
+	}
+	if query.Service.Name == "" {
+		return query, errors.New(agentcfg.ServiceName + " is required")
 	}
 
-	if err == nil && query.Service.Name == "" {
-		err = errors.New(agentcfg.ServiceName + " is required")
-	}
-	if c.IsRum {
-		query.InsecureAgents = rumAgents
-	}
 	query.Etag = ifNoneMatch(c)
-	return
+	return query, nil
 }
 
-func extractInternalError(c *request.Context, err error, withAuth bool) {
+func extractInternalError(c *request.Context, err error) {
 	msg := err.Error()
 	var body interface{}
 	var keyword string
 	switch {
 	case strings.Contains(msg, agentcfg.ErrMsgSendToKibanaFailed):
-		body = authErrMsg(msg, agentcfg.ErrMsgSendToKibanaFailed, withAuth)
+		body = authErrMsg(c, msg, agentcfg.ErrMsgSendToKibanaFailed)
 		keyword = agentcfg.ErrMsgSendToKibanaFailed
 
 	case strings.Contains(msg, agentcfg.ErrMsgReadKibanaResponse):
-		body = authErrMsg(msg, agentcfg.ErrMsgReadKibanaResponse, withAuth)
+		body = authErrMsg(c, msg, agentcfg.ErrMsgReadKibanaResponse)
 		keyword = agentcfg.ErrMsgReadKibanaResponse
 
 	case strings.Contains(msg, agentcfg.ErrUnauthorized):
 		fullMsg := "APM Server is not authorized to query Kibana. " +
 			"Please configure apm-server.kibana.username and apm-server.kibana.password, " +
 			"and ensure the user has the necessary privileges."
-		body = authErrMsg(fullMsg, agentcfg.ErrUnauthorized, withAuth)
+		body = authErrMsg(c, fullMsg, agentcfg.ErrUnauthorized)
 		keyword = agentcfg.ErrUnauthorized
 
 	default:
-		body = authErrMsg(msg, msgServiceUnavailable, withAuth)
+		body = authErrMsg(c, msg, msgServiceUnavailable)
 		keyword = msgServiceUnavailable
 	}
 
@@ -206,25 +216,25 @@ func extractInternalError(c *request.Context, err error, withAuth bool) {
 		err)
 }
 
-func extractQueryError(c *request.Context, err error, withAuth bool) {
+func extractQueryError(c *request.Context, err error) {
 	msg := err.Error()
 	if strings.Contains(msg, msgMethodUnsupported) {
 		c.Result.Set(request.IDResponseErrorsMethodNotAllowed,
 			http.StatusMethodNotAllowed,
 			msgMethodUnsupported,
-			authErrMsg(msg, msgMethodUnsupported, withAuth),
+			authErrMsg(c, msg, msgMethodUnsupported),
 			err)
 		return
 	}
 	c.Result.Set(request.IDResponseErrorsInvalidQuery,
 		http.StatusBadRequest,
 		msgInvalidQuery,
-		authErrMsg(msg, msgInvalidQuery, withAuth),
+		authErrMsg(c, msg, msgInvalidQuery),
 		err)
 }
 
-func authErrMsg(fullMsg, shortMsg string, withAuth bool) string {
-	if withAuth {
+func authErrMsg(c *request.Context, fullMsg, shortMsg string) string {
+	if c.Authentication.Method != auth.MethodAnonymous {
 		return fullMsg
 	}
 	return shortMsg

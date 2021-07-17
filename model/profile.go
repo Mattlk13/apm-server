@@ -18,15 +18,8 @@
 package model
 
 import (
-	"context"
-	"fmt"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
-	"github.com/google/pprof/profile"
-
-	"github.com/elastic/apm-server/transform"
-	"github.com/elastic/apm-server/utility"
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
 )
@@ -34,6 +27,7 @@ import (
 const (
 	profileProcessorName = "profile"
 	profileDocType       = "profile"
+	ProfilesDataset      = "apm.profiling"
 )
 
 var profileProcessorEntry = common.MapStr{
@@ -41,91 +35,61 @@ var profileProcessorEntry = common.MapStr{
 	"event": profileDocType,
 }
 
-// PprofProfile represents a resource profile.
-type PprofProfile struct {
-	Metadata Metadata
-	Profile  *profile.Profile
+// ProfileSample holds a profiling sample.
+type ProfileSample struct {
+	Metadata  Metadata
+	Timestamp time.Time
+	Duration  time.Duration
+	ProfileID string
+	Stack     []ProfileSampleStackframe
+	Labels    common.MapStr
+	Values    map[string]int64
 }
 
-// Transform transforms a Profile into a sequence of beat.Events: one per profile sample.
-func (pp PprofProfile) Transform(ctx context.Context, _ *transform.Context) []beat.Event {
-	// Precompute value field names for use in each event.
-	// TODO(axw) limit to well-known value names?
-	profileTimestamp := time.Unix(0, pp.Profile.TimeNanos)
-	valueFieldNames := make([]string, len(pp.Profile.SampleType))
-	for i, sampleType := range pp.Profile.SampleType {
-		sampleUnit := normalizeUnit(sampleType.Unit)
-		valueFieldNames[i] = sampleType.Type + "." + sampleUnit
-	}
-
-	samples := make([]beat.Event, len(pp.Profile.Sample))
-	for i, sample := range pp.Profile.Sample {
-		profileFields := common.MapStr{}
-		if pp.Profile.DurationNanos > 0 {
-			profileFields["duration"] = pp.Profile.DurationNanos
-		}
-		if len(sample.Location) > 0 {
-			hash := xxhash.New()
-			stack := make([]common.MapStr, len(sample.Location))
-			for i := len(sample.Location) - 1; i >= 0; i-- {
-				loc := sample.Location[i]
-				line := loc.Line[0] // aggregated at function level
-
-				// NOTE(axw) Currently we hash the function names so that
-				// we can aggregate stacks across multiple builds, or where
-				// binaries are not reproducible.
-				//
-				// If we decide to identify stack traces and frames using
-				// function addresses, then need to subtract the mapping's
-				// start address to eliminate the effects of ASLR, i.e.
-				//
-				//     var buf [8]byte
-				//     binary.BigEndian.PutUint64(buf[:], loc.Address-loc.Mapping.Start)
-				//     hash.Write(buf[:])
-
-				hash.WriteString(line.Function.Name)
-				fields := common.MapStr{
-					"id":       fmt.Sprintf("%x", hash.Sum(nil)),
-					"function": line.Function.Name,
-				}
-				if line.Function.Filename != "" {
-					utility.Set(fields, "filename", line.Function.Filename)
-					if line.Line > 0 {
-						utility.Set(fields, "line", line.Line)
-					}
-				}
-				stack[i] = fields
-			}
-			utility.Set(profileFields, "stack", stack)
-			utility.Set(profileFields, "top", stack[0])
-		}
-		for i, v := range sample.Value {
-			utility.Set(profileFields, valueFieldNames[i], v)
-		}
-		event := beat.Event{
-			Timestamp: profileTimestamp,
-			Fields: common.MapStr{
-				"processor":    profileProcessorEntry,
-				profileDocType: profileFields,
-			},
-		}
-		pp.Metadata.Set(event.Fields)
-		if len(sample.Label) > 0 {
-			labels := make(common.MapStr)
-			for k, v := range sample.Label {
-				utility.Set(labels, k, v)
-			}
-			utility.DeepUpdate(event.Fields, "labels", labels)
-		}
-		samples[i] = event
-	}
-	return samples
+// ProfileSampleStackframe holds details of a stack frame for a profile sample.
+type ProfileSampleStackframe struct {
+	ID       string
+	Function string
+	Filename string
+	Line     int64
 }
 
-func normalizeUnit(unit string) string {
-	switch unit {
-	case "nanoseconds":
-		unit = "ns"
+func (p *ProfileSample) toBeatEvent() beat.Event {
+	var profileFields mapStr
+	profileFields.maybeSetString("id", p.ProfileID)
+	if p.Duration > 0 {
+		profileFields.set("duration", int64(p.Duration))
 	}
-	return unit
+
+	if len(p.Stack) > 0 {
+		stackFields := make([]common.MapStr, len(p.Stack))
+		for i, frame := range p.Stack {
+			frameFields := mapStr{
+				"id":       frame.ID,
+				"function": frame.Function,
+			}
+			if frameFields.maybeSetString("filename", frame.Filename) {
+				if frame.Line > 0 {
+					frameFields.set("line", frame.Line)
+				}
+			}
+			stackFields[i] = common.MapStr(frameFields)
+		}
+		profileFields.set("stack", stackFields)
+		profileFields.set("top", stackFields[0])
+	}
+	for k, v := range p.Values {
+		profileFields.set(k, v)
+	}
+
+	fields := mapStr{
+		"processor":    profileProcessorEntry,
+		profileDocType: common.MapStr(profileFields),
+	}
+	p.Metadata.set(&fields, p.Labels)
+
+	return beat.Event{
+		Timestamp: p.Timestamp,
+		Fields:    common.MapStr(fields),
+	}
 }

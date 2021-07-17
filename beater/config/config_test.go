@@ -19,8 +19,6 @@ package config
 
 import (
 	"crypto/tls"
-	"fmt"
-	"path"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,13 +32,28 @@ import (
 	"github.com/elastic/apm-server/elasticsearch"
 )
 
-func Test_UnpackConfig(t *testing.T) {
-	falsy, truthy := false, true
-	version := "8.0.0"
+var testdataCertificateConfig = tlscommon.CertificateConfig{
+	Certificate: "../../testdata/tls/certificate.pem",
+	Key:         "../../testdata/tls/key.pem",
+}
 
-	kibanaNoSlashConfig := DefaultConfig(version)
+func TestUnpackConfig(t *testing.T) {
+	kibanaNoSlashConfig := DefaultConfig()
 	kibanaNoSlashConfig.Kibana.Enabled = true
 	kibanaNoSlashConfig.Kibana.Host = "kibanahost:5601/proxy"
+
+	kibanaHeadersConfig := DefaultConfig()
+	kibanaHeadersConfig.Kibana.Enabled = true
+	kibanaHeadersConfig.Kibana.Headers = map[string]string{"foo": "bar"}
+
+	responseHeadersConfig := DefaultConfig()
+	responseHeadersConfig.ResponseHeaders = map[string][]string{
+		"k1": []string{"v1"},
+		"k2": []string{"v2", "v3"},
+	}
+	responseHeadersConfig.RumConfig.ResponseHeaders = map[string][]string{
+		"k4": []string{"v4"},
+	}
 
 	tests := map[string]struct {
 		inpCfg map[string]interface{}
@@ -48,7 +61,7 @@ func Test_UnpackConfig(t *testing.T) {
 	}{
 		"default config": {
 			inpCfg: map[string]interface{}{},
-			outCfg: DefaultConfig(version),
+			outCfg: DefaultConfig(),
 		},
 		"overwrite default": {
 			inpCfg: map[string]interface{}{
@@ -61,11 +74,15 @@ func Test_UnpackConfig(t *testing.T) {
 				"shutdown_timeout":      9 * time.Second,
 				"capture_personal_data": true,
 				"secret_token":          "1234random",
+				"output": map[string]interface{}{
+					"backoff.init": time.Second,
+					"backoff.max":  time.Minute,
+				},
 				"ssl": map[string]interface{}{
 					"enabled":                 true,
-					"key":                     path.Join("../..", "testdata", "tls", "key.pem"),
-					"certificate":             path.Join("../..", "testdata", "tls", "certificate.pem"),
-					"certificate_authorities": []string{path.Join("../..", "testdata", "tls", "./ca.crt.pem")},
+					"key":                     "../../testdata/tls/key.pem",
+					"certificate":             "../../testdata/tls/certificate.pem",
+					"certificate_authorities": []string{"../../testdata/tls/ca.crt.pem"},
 					"client_authentication":   "required",
 				},
 				"expvar": map[string]interface{}{
@@ -78,14 +95,16 @@ func Test_UnpackConfig(t *testing.T) {
 						"limit":    7200,
 						"lru_size": 2000,
 					},
-					"allow_origins": []string{"example*"},
-					"allow_headers": []string{"Authorization"},
+					"allow_service_names": []string{"opbeans-rum"},
+					"allow_origins":       []string{"example*"},
+					"allow_headers":       []string{"Authorization"},
 					"source_mapping": map[string]interface{}{
 						"cache": map[string]interface{}{
 							"expiration": 8 * time.Minute,
 						},
 						"index_pattern":       "apm-test*",
 						"elasticsearch.hosts": []string{"localhost:9201", "localhost:9202"},
+						"timeout":             "2s",
 					},
 					"library_pattern":       "^custom",
 					"exclude_from_grouping": "^grouping",
@@ -110,16 +129,17 @@ func Test_UnpackConfig(t *testing.T) {
 					"elasticsearch.hosts": []string{"localhost:9201", "localhost:9202"},
 				},
 				"aggregation": map[string]interface{}{
-					"enabled":                          true,
-					"interval":                         "1s",
-					"max_transaction_groups":           123,
-					"hdrhistogram_significant_figures": 1,
-					"rum": map[string]interface{}{
-						"user_agent": map[string]interface{}{
-							"lru_size": 123,
-						},
+					"transactions": map[string]interface{}{
+						"enabled":                          false,
+						"interval":                         "1s",
+						"max_groups":                       123,
+						"hdrhistogram_significant_figures": 1,
+					},
+					"service_destinations": map[string]interface{}{
+						"max_groups": 456,
 					},
 				},
+				"default_service_environment": "overridden",
 			},
 			outCfg: &Config{
 				Host:            "localhost:3000",
@@ -129,46 +149,83 @@ func Test_UnpackConfig(t *testing.T) {
 				ReadTimeout:     3000000000,
 				WriteTimeout:    4000000000,
 				ShutdownTimeout: 9000000000,
-				SecretToken:     "1234random",
+				AgentAuth: AgentAuth{
+					SecretToken: "1234random",
+					APIKey: APIKeyAgentAuth{
+						Enabled:     true,
+						LimitPerMin: 200,
+						ESConfig: &elasticsearch.Config{
+							Hosts:      elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
+							Protocol:   "http",
+							Timeout:    5 * time.Second,
+							MaxRetries: 3,
+							Backoff:    elasticsearch.DefaultBackoffConfig,
+						},
+						configured:   true,
+						esConfigured: true,
+					},
+					Anonymous: AnonymousAgentAuth{
+						Enabled:      true,
+						AllowService: []string{"opbeans-rum"},
+						AllowAgent:   []string{"rum-js", "js-base"},
+						RateLimit: RateLimit{
+							EventLimit: 7200,
+							IPLimit:    2000,
+						},
+					},
+				},
 				TLS: &tlscommon.ServerConfig{
-					Enabled: &truthy,
-					Certificate: tlscommon.CertificateConfig{
-						Certificate: path.Join("../..", "testdata", "tls", "certificate.pem"),
-						Key:         path.Join("../..", "testdata", "tls", "key.pem")},
-					ClientAuth: 4,
-					CAs:        []string{path.Join("../..", "testdata", "tls", "./ca.crt.pem")},
+					Enabled:     newBool(true),
+					Certificate: testdataCertificateConfig,
+					ClientAuth:  4,
+					CAs:         []string{"../../testdata/tls/ca.crt.pem"},
 				},
 				AugmentEnabled: true,
-				Expvar: &ExpvarConfig{
-					Enabled: &truthy,
+				Expvar: ExpvarConfig{
+					Enabled: true,
 					URL:     "/debug/vars",
 				},
-				RumConfig: &RumConfig{
-					Enabled: &truthy,
-					EventRate: &EventRate{
-						Limit:   7200,
-						LruSize: 2000,
+				Pprof: PprofConfig{
+					Enabled: false,
+				},
+				SelfInstrumentation: InstrumentationConfig{
+					Profiling: ProfilingConfig{
+						CPU: CPUProfiling{
+							Interval: 1 * time.Minute,
+							Duration: 10 * time.Second,
+						},
+						Heap: HeapProfiling{
+							Interval: 1 * time.Minute,
+						},
 					},
+				},
+				RumConfig: RumConfig{
+					Enabled:      true,
 					AllowOrigins: []string{"example*"},
 					AllowHeaders: []string{"Authorization"},
-					SourceMapping: &SourceMapping{
-						Cache:        &Cache{Expiration: 8 * time.Minute},
+					SourceMapping: SourceMapping{
+						Enabled:      true,
+						Cache:        Cache{Expiration: 8 * time.Minute},
 						IndexPattern: "apm-test*",
 						ESConfig: &elasticsearch.Config{
-							Hosts:    elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
-							Protocol: "http",
-							Timeout:  5 * time.Second},
+							Hosts:      elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
+							Protocol:   "http",
+							Timeout:    5 * time.Second,
+							MaxRetries: 3,
+							Backoff:    elasticsearch.DefaultBackoffConfig,
+						},
+						Metadata:     []SourceMapMetadata{},
+						Timeout:      2 * time.Second,
 						esConfigured: true,
 					},
 					LibraryPattern:      "^custom",
 					ExcludeFromGrouping: "^grouping",
-					BeatVersion:         version,
 				},
-				Register: &RegisterConfig{
-					Ingest: &IngestConfig{
-						Pipeline: &PipelineConfig{
-							Enabled:   &truthy,
-							Overwrite: &falsy,
+				Register: RegisterConfig{
+					Ingest: IngestConfig{
+						Pipeline: PipelineConfig{
+							Enabled:   true,
+							Overwrite: false,
 							Path:      filepath.Join("tmp", "definition.json"),
 						},
 					},
@@ -177,22 +234,20 @@ func Test_UnpackConfig(t *testing.T) {
 					Enabled:      true,
 					ClientConfig: defaultKibanaConfig().ClientConfig,
 				},
-				AgentConfig: &AgentConfig{Cache: &Cache{Expiration: 2 * time.Minute}},
-				Pipeline:    defaultAPMPipeline,
+				KibanaAgentConfig: KibanaAgentConfig{Cache: Cache{Expiration: 2 * time.Minute}},
+				Pipeline:          defaultAPMPipeline,
 				JaegerConfig: JaegerConfig{
 					GRPC: JaegerGRPCConfig{
 						Enabled: true,
 						Host:    "localhost:12345",
 						TLS: func() *tls.Config {
 							tlsServerConfig, err := tlscommon.LoadTLSServerConfig(&tlscommon.ServerConfig{
-								Enabled: &truthy,
-								Certificate: tlscommon.CertificateConfig{
-									Certificate: path.Join("../..", "testdata", "tls", "certificate.pem"),
-									Key:         path.Join("../..", "testdata", "tls", "key.pem")},
-								ClientAuth: 4,
-								CAs:        []string{path.Join("../..", "testdata", "tls", "./ca.crt.pem")}})
+								Enabled:     newBool(true),
+								Certificate: testdataCertificateConfig,
+								ClientAuth:  4,
+								CAs:         []string{"../../testdata/tls/ca.crt.pem"}})
 							require.NoError(t, err)
-							return tlsServerConfig.BuildModuleConfig("localhost:12345")
+							return tlsServerConfig.BuildServerConfig("localhost:12345")
 						}(),
 					},
 					HTTP: JaegerHTTPConfig{
@@ -200,25 +255,32 @@ func Test_UnpackConfig(t *testing.T) {
 						Host:    "localhost:6789",
 					},
 				},
-				APIKeyConfig: &APIKeyConfig{
-					Enabled:     true,
-					LimitPerMin: 200,
-					ESConfig: &elasticsearch.Config{
-						Hosts:    elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
-						Protocol: "http",
-						Timeout:  5 * time.Second},
-					esConfigured: true,
-				},
 				Aggregation: AggregationConfig{
-					Enabled:                        true,
-					Interval:                       time.Second,
-					MaxTransactionGroups:           123,
-					HDRHistogramSignificantFigures: 1,
-					RUMUserAgentLRUSize:            123,
+					Transactions: TransactionAggregationConfig{
+						Enabled:                        false,
+						Interval:                       time.Second,
+						MaxTransactionGroups:           123,
+						HDRHistogramSignificantFigures: 1,
+					},
+					ServiceDestinations: ServiceDestinationAggregationConfig{
+						Enabled:   true,
+						Interval:  time.Minute,
+						MaxGroups: 456,
+					},
 				},
 				Sampling: SamplingConfig{
 					KeepUnsampled: true,
+					Tail: TailSamplingConfig{
+						Enabled:               false,
+						ESConfig:              elasticsearch.DefaultConfig(),
+						Interval:              1 * time.Minute,
+						IngestRateDecayFactor: 0.25,
+						StorageDir:            "tail_sampling",
+						StorageGCInterval:     5 * time.Minute,
+						TTL:                   30 * time.Minute,
+					},
 				},
+				DefaultServiceEnvironment: "overridden",
 			},
 		},
 		"merge config with default": {
@@ -226,15 +288,28 @@ func Test_UnpackConfig(t *testing.T) {
 				"host":         "localhost:3000",
 				"secret_token": "1234random",
 				"ssl": map[string]interface{}{
-					"enabled": true,
+					"enabled":     true,
+					"certificate": "../../testdata/tls/certificate.pem",
+					"key":         "../../testdata/tls/key.pem",
 				},
 				"expvar": map[string]interface{}{
 					"enabled": true,
 					"url":     "/debug/vars",
 				},
+				"pprof": map[string]interface{}{
+					"enabled": true,
+				},
 				"rum": map[string]interface{}{
 					"enabled": true,
 					"source_mapping": map[string]interface{}{
+						"metadata": []map[string]string{
+							{
+								"service.name":    "opbeans-rum",
+								"service.version": "1.2.3",
+								"bundle.filepath": "/test/e2e/general-usecase/bundle.js.map",
+								"sourcemap.url":   "http://somewhere.com/bundle.js.map",
+							},
+						},
 						"cache": map[string]interface{}{
 							"expiration": 7,
 						},
@@ -248,11 +323,17 @@ func Test_UnpackConfig(t *testing.T) {
 						},
 					},
 				},
-				"jaeger.grpc.enabled":                 true,
-				"api_key.enabled":                     true,
-				"aggregation.enabled":                 true,
-				"aggregation.rum.user_agent.lru_size": 123,
-				"sampling.keep_unsampled":             false,
+				"jaeger.grpc.enabled":                      true,
+				"api_key.enabled":                          true,
+				"aggregation.transactions.enabled":         false,
+				"aggregation.service_destinations.enabled": false,
+				"sampling.keep_unsampled":                  false,
+				"sampling.tail": map[string]interface{}{
+					"enabled":           true,
+					"policies":          []map[string]interface{}{{"sample_rate": 0.5}},
+					"interval":          "2m",
+					"ingest_rate_decay": 1.0,
+				},
 			},
 			outCfg: &Config{
 				Host:            "localhost:3000",
@@ -262,57 +343,94 @@ func Test_UnpackConfig(t *testing.T) {
 				ReadTimeout:     30000000000,
 				WriteTimeout:    30000000000,
 				ShutdownTimeout: 5000000000,
-				SecretToken:     "1234random",
+				AgentAuth: AgentAuth{
+					SecretToken: "1234random",
+					APIKey: APIKeyAgentAuth{
+						Enabled:     true,
+						LimitPerMin: 100,
+						ESConfig:    elasticsearch.DefaultConfig(),
+						configured:  true,
+					},
+					Anonymous: AnonymousAgentAuth{
+						Enabled:    true,
+						AllowAgent: []string{"rum-js", "js-base"},
+						RateLimit: RateLimit{
+							EventLimit: 300,
+							IPLimit:    1000,
+						},
+					},
+				},
 				TLS: &tlscommon.ServerConfig{
-					Enabled:     &truthy,
-					Certificate: tlscommon.CertificateConfig{Certificate: "", Key: ""},
-					ClientAuth:  0},
+					Enabled:     newBool(true),
+					Certificate: testdataCertificateConfig,
+					ClientAuth:  0,
+				},
 				AugmentEnabled: true,
-				Expvar: &ExpvarConfig{
-					Enabled: &truthy,
+				Expvar: ExpvarConfig{
+					Enabled: true,
 					URL:     "/debug/vars",
 				},
-				RumConfig: &RumConfig{
-					Enabled: &truthy,
-					EventRate: &EventRate{
-						Limit:   300,
-						LruSize: 1000,
+				Pprof: PprofConfig{
+					Enabled: true,
+				},
+				SelfInstrumentation: InstrumentationConfig{
+					Profiling: ProfilingConfig{
+						CPU: CPUProfiling{
+							Interval: 1 * time.Minute,
+							Duration: 10 * time.Second,
+						},
+						Heap: HeapProfiling{
+							Interval: 1 * time.Minute,
+						},
 					},
+				},
+				RumConfig: RumConfig{
+					Enabled:      true,
 					AllowOrigins: []string{"*"},
 					AllowHeaders: []string{},
-					SourceMapping: &SourceMapping{
-						Cache: &Cache{
+					SourceMapping: SourceMapping{
+						Enabled: true,
+						Cache: Cache{
 							Expiration: 7 * time.Second,
 						},
 						IndexPattern: "apm-*-sourcemap*",
 						ESConfig:     elasticsearch.DefaultConfig(),
+						Metadata: []SourceMapMetadata{
+							{
+								ServiceName:    "opbeans-rum",
+								ServiceVersion: "1.2.3",
+								BundleFilepath: "/test/e2e/general-usecase/bundle.js.map",
+								SourceMapURL:   "http://somewhere.com/bundle.js.map",
+							},
+						},
+						Timeout: 5 * time.Second,
 					},
 					LibraryPattern:      "rum",
 					ExcludeFromGrouping: "^/webpack",
-					BeatVersion:         "8.0.0",
 				},
-				Register: &RegisterConfig{
-					Ingest: &IngestConfig{
-						Pipeline: &PipelineConfig{
-							Enabled: &falsy,
+				Register: RegisterConfig{
+					Ingest: IngestConfig{
+						Pipeline: PipelineConfig{
+							Enabled: false,
 							Path:    filepath.Join("ingest", "pipeline", "definition.json"),
 						},
 					},
 				},
-				Kibana:      defaultKibanaConfig(),
-				AgentConfig: &AgentConfig{Cache: &Cache{Expiration: 30 * time.Second}},
-				Pipeline:    defaultAPMPipeline,
+				Kibana:            defaultKibanaConfig(),
+				KibanaAgentConfig: KibanaAgentConfig{Cache: Cache{Expiration: 30 * time.Second}},
+				Pipeline:          defaultAPMPipeline,
 				JaegerConfig: JaegerConfig{
 					GRPC: JaegerGRPCConfig{
 						Enabled: true,
 						Host:    "localhost:14250",
 						TLS: func() *tls.Config {
 							tlsServerConfig, err := tlscommon.LoadTLSServerConfig(&tlscommon.ServerConfig{
-								Enabled:     &truthy,
-								Certificate: tlscommon.CertificateConfig{Certificate: "", Key: ""},
-								ClientAuth:  0})
+								Enabled:     newBool(true),
+								Certificate: testdataCertificateConfig,
+								ClientAuth:  0,
+							})
 							require.NoError(t, err)
-							return tlsServerConfig.BuildModuleConfig("localhost:14250")
+							return tlsServerConfig.BuildServerConfig("localhost:14250")
 						}(),
 					},
 					HTTP: JaegerHTTPConfig{
@@ -320,16 +438,31 @@ func Test_UnpackConfig(t *testing.T) {
 						Host:    "localhost:14268",
 					},
 				},
-				APIKeyConfig: &APIKeyConfig{Enabled: true, LimitPerMin: 100, ESConfig: elasticsearch.DefaultConfig()},
 				Aggregation: AggregationConfig{
-					Enabled:                        true,
-					Interval:                       time.Minute,
-					MaxTransactionGroups:           1000,
-					HDRHistogramSignificantFigures: 2,
-					RUMUserAgentLRUSize:            123,
+					Transactions: TransactionAggregationConfig{
+						Enabled:                        false,
+						Interval:                       time.Minute,
+						MaxTransactionGroups:           10000,
+						HDRHistogramSignificantFigures: 2,
+					},
+					ServiceDestinations: ServiceDestinationAggregationConfig{
+						Enabled:   false,
+						Interval:  time.Minute,
+						MaxGroups: 10000,
+					},
 				},
 				Sampling: SamplingConfig{
 					KeepUnsampled: false,
+					Tail: TailSamplingConfig{
+						Enabled:               true,
+						Policies:              []TailSamplingPolicy{{SampleRate: 0.5}},
+						ESConfig:              elasticsearch.DefaultConfig(),
+						Interval:              2 * time.Minute,
+						IngestRateDecayFactor: 1.0,
+						StorageDir:            "tail_sampling",
+						StorageGCInterval:     5 * time.Minute,
+						TTL:                   30 * time.Minute,
+					},
 				},
 			},
 		},
@@ -342,6 +475,31 @@ func Test_UnpackConfig(t *testing.T) {
 			},
 			outCfg: kibanaNoSlashConfig,
 		},
+		"kibana headers": {
+			inpCfg: map[string]interface{}{
+				"kibana": map[string]interface{}{
+					"enabled": "true",
+					"headers": map[string]interface{}{
+						"foo": "bar",
+					},
+				},
+			},
+			outCfg: kibanaHeadersConfig,
+		},
+		"response headers": {
+			inpCfg: map[string]interface{}{
+				"response_headers": map[string]interface{}{
+					"k1": "v1",
+					"k2": []string{"v2", "v3"},
+				},
+				"rum": map[string]interface{}{
+					"response_headers": map[string]interface{}{
+						"k4": []string{"v4"},
+					},
+				},
+			},
+			outCfg: responseHeadersConfig,
+		},
 	}
 
 	for name, test := range tests {
@@ -349,54 +507,24 @@ func Test_UnpackConfig(t *testing.T) {
 			inpCfg, err := common.NewConfigFrom(test.inpCfg)
 			assert.NoError(t, err)
 
-			cfg, err := NewConfig(version, inpCfg, nil)
+			cfg, err := NewConfig(inpCfg, nil)
 			require.NoError(t, err)
 			require.NotNil(t, cfg)
+			if test.outCfg.JaegerConfig.GRPC.TLS != nil || cfg.JaegerConfig.GRPC.TLS != nil {
+				// tlscommon captures closures for the following callbacks
+				// setting them to nil to skip these from comparison
+				cfg.JaegerConfig.GRPC.TLS.VerifyConnection = nil
+				test.outCfg.JaegerConfig.GRPC.TLS.VerifyConnection = nil
+				test.outCfg.JaegerConfig.GRPC.TLS.ClientCAs = nil
+				cfg.JaegerConfig.GRPC.TLS.ClientCAs = nil
+			}
+
 			assert.Equal(t, test.outCfg, cfg)
 		})
 	}
 }
 
-func TestReplaceBeatVersion(t *testing.T) {
-	cases := []struct {
-		version      string
-		indexPattern string
-		replaced     string
-	}{
-		{version: "", indexPattern: "", replaced: ""},
-		{version: "6.2.0", indexPattern: "apm-%{[observer.version]}", replaced: "apm-6.2.0"},
-		{version: "6.2.0", indexPattern: "apm-sourcemap", replaced: "apm-sourcemap"},
-	}
-	for _, test := range cases {
-		out := replaceVersion(test.indexPattern, test.version)
-		assert.Equal(t, test.replaced, out)
-	}
-}
-
-func TestPipeline(t *testing.T) {
-	truthy, falsy := true, false
-	cases := []struct {
-		c                  *PipelineConfig
-		enabled, overwrite bool
-	}{
-		{c: nil, enabled: false, overwrite: false},
-		{c: &PipelineConfig{}, enabled: true, overwrite: false}, //default values
-		{c: &PipelineConfig{Enabled: &falsy, Overwrite: &truthy},
-			enabled: false, overwrite: true},
-		{c: &PipelineConfig{Enabled: &truthy, Overwrite: &falsy},
-			enabled: true, overwrite: false},
-	}
-
-	for idx, test := range cases {
-		assert.Equal(t, test.enabled, test.c.IsEnabled(),
-			fmt.Sprintf("<%v> IsEnabled() expected %v", idx, test.enabled))
-		assert.Equal(t, test.overwrite, test.c.ShouldOverwrite(),
-			fmt.Sprintf("<%v> ShouldOverwrite() expected %v", idx, test.overwrite))
-	}
-}
-
 func TestTLSSettings(t *testing.T) {
-
 	t.Run("ClientAuthentication", func(t *testing.T) {
 		for name, tc := range map[string]struct {
 			config map[string]interface{}
@@ -404,34 +532,52 @@ func TestTLSSettings(t *testing.T) {
 			tls *tlscommon.ServerConfig
 		}{
 			"Defaults": {
-				config: map[string]interface{}{"ssl.enabled": true},
-				tls:    &tlscommon.ServerConfig{ClientAuth: 0},
+				config: map[string]interface{}{"ssl": map[string]interface{}{
+					"enabled":     true,
+					"key":         "../../testdata/tls/key.pem",
+					"certificate": "../../testdata/tls/certificate.pem",
+				}},
+				tls: &tlscommon.ServerConfig{ClientAuth: 0, Certificate: testdataCertificateConfig},
 			},
 			"ConfiguredToRequired": {
-				config: map[string]interface{}{"ssl": map[string]interface{}{"client_authentication": "required"}},
-				tls:    &tlscommon.ServerConfig{ClientAuth: 4},
+				config: map[string]interface{}{"ssl": map[string]interface{}{
+					"client_authentication": "required",
+					"key":                   "../../testdata/tls/key.pem",
+					"certificate":           "../../testdata/tls/certificate.pem",
+				}},
+				tls: &tlscommon.ServerConfig{ClientAuth: 4, Certificate: testdataCertificateConfig},
 			},
 			"ConfiguredToOptional": {
-				config: map[string]interface{}{"ssl": map[string]interface{}{"client_authentication": "optional"}},
-				tls:    &tlscommon.ServerConfig{ClientAuth: 3},
+				config: map[string]interface{}{"ssl": map[string]interface{}{
+					"client_authentication": "optional",
+					"key":                   "../../testdata/tls/key.pem",
+					"certificate":           "../../testdata/tls/certificate.pem",
+				}},
+				tls: &tlscommon.ServerConfig{ClientAuth: 3, Certificate: testdataCertificateConfig},
 			},
 			"DefaultRequiredByCA": {
 				config: map[string]interface{}{"ssl": map[string]interface{}{
-					"certificate_authorities": []string{path.Join("..", "..", "testdata", "tls", "./ca.crt.pem")}}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 4},
+					"certificate_authorities": []string{"../../testdata/tls/ca.crt.pem"},
+					"key":                     "../../testdata/tls/key.pem",
+					"certificate":             "../../testdata/tls/certificate.pem",
+				}},
+				tls: &tlscommon.ServerConfig{ClientAuth: 4, Certificate: testdataCertificateConfig},
 			},
 			"ConfiguredWithCA": {
 				config: map[string]interface{}{"ssl": map[string]interface{}{
-					"certificate_authorities": []string{path.Join("..", "..", "testdata", "tls", "./ca.crt.pem")},
-					"client_authentication":   "none"}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 0},
+					"client_authentication":   "none",
+					"certificate_authorities": []string{"../../testdata/tls/ca.crt.pem"},
+					"key":                     "../../testdata/tls/key.pem",
+					"certificate":             "../../testdata/tls/certificate.pem",
+				}},
+				tls: &tlscommon.ServerConfig{ClientAuth: 0, Certificate: testdataCertificateConfig},
 			},
 		} {
 			t.Run(name, func(t *testing.T) {
 				ucfgCfg, err := common.NewConfigFrom(tc.config)
 				require.NoError(t, err)
 
-				cfg, err := NewConfig("9.9.9", ucfgCfg, nil)
+				cfg, err := NewConfig(ucfgCfg, nil)
 				require.NoError(t, err)
 				assert.Equal(t, tc.tls.ClientAuth, cfg.TLS.ClientAuth)
 			})
@@ -439,8 +585,6 @@ func TestTLSSettings(t *testing.T) {
 	})
 
 	t.Run("Enabled", func(t *testing.T) {
-		truthy := true
-		falsy := false
 		for name, tc := range map[string]struct {
 			tlsServerCfg *tlscommon.ServerConfig
 			expected     bool
@@ -449,8 +593,8 @@ func TestTLSSettings(t *testing.T) {
 			"SSL":               {tlsServerCfg: &tlscommon.ServerConfig{Enabled: nil}, expected: true},
 			"WithCert":          {tlsServerCfg: &tlscommon.ServerConfig{Certificate: tlscommon.CertificateConfig{Certificate: "Cert"}}, expected: true},
 			"WithCertAndKey":    {tlsServerCfg: &tlscommon.ServerConfig{Certificate: tlscommon.CertificateConfig{Certificate: "Cert", Key: "key"}}, expected: true},
-			"ConfiguredToFalse": {tlsServerCfg: &tlscommon.ServerConfig{Certificate: tlscommon.CertificateConfig{Certificate: "Cert", Key: "key"}, Enabled: &falsy}, expected: false},
-			"ConfiguredToTrue":  {tlsServerCfg: &tlscommon.ServerConfig{Enabled: &truthy}, expected: true},
+			"ConfiguredToFalse": {tlsServerCfg: &tlscommon.ServerConfig{Certificate: tlscommon.CertificateConfig{Certificate: "Cert", Key: "key"}, Enabled: newBool(false)}, expected: false},
+			"ConfiguredToTrue":  {tlsServerCfg: &tlscommon.ServerConfig{Enabled: newBool(true)}, expected: true},
 		} {
 			t.Run(name, func(t *testing.T) {
 				b := tc.expected
@@ -463,44 +607,47 @@ func TestTLSSettings(t *testing.T) {
 
 func TestAgentConfig(t *testing.T) {
 	t.Run("InvalidValueTooSmall", func(t *testing.T) {
-		cfg, err := NewConfig("9.9.9",
-			common.MustNewConfigFrom(map[string]string{"agent.config.cache.expiration": "123ms"}), nil)
+		cfg, err := NewConfig(common.MustNewConfigFrom(map[string]string{"agent.config.cache.expiration": "123ms"}), nil)
 		require.Error(t, err)
 		assert.Nil(t, cfg)
 	})
 
 	t.Run("InvalidUnit", func(t *testing.T) {
-		cfg, err := NewConfig("9.9.9",
-			common.MustNewConfigFrom(map[string]string{"agent.config.cache.expiration": "1230ms"}), nil)
+		cfg, err := NewConfig(common.MustNewConfigFrom(map[string]string{"agent.config.cache.expiration": "1230ms"}), nil)
 		require.Error(t, err)
 		assert.Nil(t, cfg)
 	})
 
 	t.Run("Valid", func(t *testing.T) {
-		cfg, err := NewConfig("9.9.9",
-			common.MustNewConfigFrom(map[string]string{"agent.config.cache.expiration": "123000ms"}), nil)
+		cfg, err := NewConfig(common.MustNewConfigFrom(map[string]string{"agent.config.cache.expiration": "123000ms"}), nil)
 		require.NoError(t, err)
-		assert.Equal(t, time.Second*123, cfg.AgentConfig.Cache.Expiration)
+		assert.Equal(t, time.Second*123, cfg.KibanaAgentConfig.Cache.Expiration)
 	})
 }
 
 func TestNewConfig_ESConfig(t *testing.T) {
-	version := "8.0.0"
-	ucfg, err := common.NewConfigFrom(`{"rum.enabled":true,"api_key.enabled":true}`)
+	ucfg, err := common.NewConfigFrom(`{"rum.enabled":true,"api_key.enabled":true,"sampling.tail.policies":[{"sample_rate": 0.5}]}`)
 	require.NoError(t, err)
 
 	// no es config given
-	cfg, err := NewConfig(version, ucfg, nil)
+	cfg, err := NewConfig(ucfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.RumConfig.SourceMapping.ESConfig)
-	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.APIKeyConfig.ESConfig)
+	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.AgentAuth.APIKey.ESConfig)
+	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.Sampling.Tail.ESConfig)
 
 	// with es config
 	outputESCfg := common.MustNewConfigFrom(`{"hosts":["192.0.0.168:9200"]}`)
-	cfg, err = NewConfig(version, ucfg, outputESCfg)
+	cfg, err = NewConfig(ucfg, outputESCfg)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.RumConfig.SourceMapping.ESConfig)
 	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.RumConfig.SourceMapping.ESConfig.Hosts))
-	assert.NotNil(t, cfg.APIKeyConfig.ESConfig)
-	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.APIKeyConfig.ESConfig.Hosts))
+	assert.NotNil(t, cfg.AgentAuth.APIKey.ESConfig)
+	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.AgentAuth.APIKey.ESConfig.Hosts))
+	assert.NotNil(t, cfg.Sampling.Tail.ESConfig)
+	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.Sampling.Tail.ESConfig.Hosts))
+}
+
+func newBool(v bool) *bool {
+	return &v
 }

@@ -11,15 +11,9 @@ import unittest
 from urllib.parse import urlparse
 
 from elasticsearch import Elasticsearch, NotFoundError
-from nose.tools import nottest
 import requests
 
-# Add libbeat/tests/system to the import path.
-output = subprocess.check_output(["go", "list", "-m", "-f", "{{.Path}} {{.Dir}}", "all"]).decode("utf-8")
-beats_line = [line for line in output.splitlines() if line.startswith("github.com/elastic/beats/")][0]
-beats_dir = beats_line.split(" ", 2)[1]
-sys.path.append(os.path.join(beats_dir, 'libbeat', 'tests', 'system'))
-
+import libbeat_paths
 from beat.beat import INTEGRATION_TESTS, TestCase, TimeoutError
 from helper import wait_until
 from es_helper import cleanup, default_pipelines
@@ -127,7 +121,6 @@ class BaseTest(TestCase):
     def get_payload_path(self, name):
         return self.get_testdata_path('intake-v2', name)
 
-    @nottest
     def get_testdata_path(self, *names):
         return self._beat_path_join('testdata', *names)
 
@@ -226,7 +219,7 @@ class ServerBaseTest(BaseTest):
         log = self.get_log()
         for s in suppress:
             log = re.sub(s, "", log)
-        self.assertNotRegexpMatches(log, "ERR|WARN")
+        self.assertNotRegex(log, "ERR|WARN")
 
     def request_intake(self, data=None, url=None, headers=None):
         if not url:
@@ -275,11 +268,11 @@ class ElasticTest(ServerBaseTest):
 
     def wait_until_pipeline_logged(self):
         registration_enabled = self.config().get("register_pipeline_enabled")
-        msg = "Registered Ingest Pipelines successfully" if registration_enabled != "false" else "No pipeline callback registered"
+        msg = "Registered Ingest Pipelines successfully" if registration_enabled != "false" else "Pipeline registration disabled"
         wait_until(lambda: self.log_contains(msg), name="pipelines registration")
 
     def load_docs_with_template(self, data_path, url, endpoint, expected_events_count,
-                                query_index=None, max_timeout=10, extra_headers=None, file_mode="r"):
+                                query_index=None, max_timeout=10, extra_headers=None, file_mode="rb"):
 
         if query_index is None:
             query_index = apm_prefix
@@ -344,8 +337,8 @@ class ElasticTest(ServerBaseTest):
     def logged_requests(self, url="/intake/v2/events"):
         for line in self.get_log_lines():
             jline = json.loads(line)
-            u = urlparse(jline.get("URL", ""))
-            if jline.get("logger") == "request" and u.path == url:
+            u = urlparse(jline.get("url.original", ""))
+            if jline.get("log.logger") == "request" and u.path == url:
                 yield jline
 
     def approve_docs(self, base_path, received):

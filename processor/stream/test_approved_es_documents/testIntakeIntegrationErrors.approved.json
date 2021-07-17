@@ -1,7 +1,7 @@
 {
     "events": [
         {
-            "@timestamp": "2017-05-09T15:04:05.999999Z",
+            "@timestamp": "2017-05-09T15:04:05.999Z",
             "agent": {
                 "ephemeral_id": "abcdef123",
                 "name": "elastic-node",
@@ -28,7 +28,10 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
@@ -136,7 +139,6 @@
                         "type": "ConnectionError"
                     }
                 ],
-                "grouping_key": "d72b25a26fde3f3aaad1c86950acd070",
                 "id": "0123456789012345",
                 "log": {
                     "level": "warning",
@@ -164,7 +166,6 @@
                             "exclude_from_grouping": false,
                             "filename": "/webpack/file/name.py",
                             "function": "foo",
-                            "library_frame": false,
                             "line": {
                                 "column": 4,
                                 "context": "line3",
@@ -217,7 +218,7 @@
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "myhostname",
                 "ip": "192.0.0.1",
                 "name": "prod.example",
                 "os": {
@@ -256,7 +257,7 @@
                             "Mozilla Chrome Edge"
                         ]
                     },
-                    "method": "post",
+                    "method": "POST",
                     "referrer": "http://localhost:8000/test/e2e/",
                     "socket": {
                         "encrypted": true,
@@ -338,6 +339,7 @@
                 "scheme": "https"
             },
             "user": {
+                "domain": "ldap://abc",
                 "id": "99",
                 "name": "foo"
             },
@@ -370,13 +372,15 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "error": {
-                "grouping_key": "dc8dd667f7036ec5f0bae87bf2188243",
                 "id": "xFoaabb123FFFFFF",
                 "log": {
                     "message": "no user found",
@@ -390,7 +394,7 @@
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "myhostname",
                 "ip": "192.0.0.1",
                 "name": "prod.example",
                 "os": {
@@ -444,6 +448,7 @@
                 "us": 1533826745999000
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"
@@ -474,7 +479,10 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
@@ -485,12 +493,11 @@
                         "message": "Cannot read property 'baz' no defined"
                     }
                 ],
-                "grouping_key": "ae0232fed4cb40e7ebc62a585a421d60",
                 "id": "cdefab0123456789"
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "myhostname",
                 "ip": "192.0.0.1",
                 "name": "prod.example",
                 "os": {
@@ -544,13 +551,14 @@
                 "us": 1533826745999000
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"
             }
         },
         {
-            "@timestamp": "2018-08-01T10:00:00Z",
+            "@timestamp": "2018-08-01T10:00:00.000Z",
             "agent": {
                 "ephemeral_id": "justanid",
                 "name": "elastic-ruby",
@@ -574,7 +582,10 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
@@ -585,12 +596,11 @@
                         "type": "DbError"
                     }
                 ],
-                "grouping_key": "c3868d6704b923014eaffea034e70a3d",
                 "id": "cdefab0123456780"
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "myhostname",
                 "ip": "192.0.0.1",
                 "name": "prod.example",
                 "os": {
@@ -650,6 +660,7 @@
                 "id": "0123456789abcdeffedcba0123456789"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"
@@ -680,13 +691,15 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "error": {
-                "grouping_key": "d6b3f958dfea98dc9ed2b57d5f0c48bb",
                 "id": "abcdef0123456789",
                 "log": {
                     "level": "custom log level",
@@ -695,7 +708,7 @@
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "myhostname",
                 "ip": "192.0.0.1",
                 "name": "prod.example",
                 "os": {
@@ -760,6 +773,7 @@
                 "type": "request"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"

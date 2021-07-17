@@ -1,17 +1,16 @@
 {
     "events": [
         {
-            "@timestamp": "2019-12-16T12:46:58.000768068Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
             },
-            "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
+            "event": {
+                "outcome": "failure"
             },
-            "labels": {
-                "error": true
+            "host": {
+                "hostname": "host-abc"
             },
             "processor": {
                 "event": "transaction",
@@ -21,10 +20,7 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768

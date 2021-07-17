@@ -1,16 +1,18 @@
 {
     "events": [
         {
-            "@timestamp": "2018-08-01T10:00:00Z",
+            "@timestamp": "2018-08-01T10:00:00.000Z",
             "agent": {
                 "name": "elastic-node",
                 "version": "3.14.0"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
                 "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "prod1.example.com",
                 "os": {
                     "platform": "darwin"
                 }
@@ -39,9 +41,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "prod1.example.com"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -73,16 +72,18 @@
             }
         },
         {
-            "@timestamp": "2018-08-01T10:00:00.01Z",
+            "@timestamp": "2018-08-01T10:00:00.010Z",
             "agent": {
                 "name": "elastic-node",
                 "version": "3.14.0"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
                 "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "prod1.example.com",
                 "os": {
                     "platform": "darwin"
                 }
@@ -114,9 +115,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "prod1.example.com"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -150,7 +148,7 @@
             }
         },
         {
-            "@timestamp": "2018-01-01T11:00:00Z",
+            "@timestamp": "2018-01-01T11:00:00.000Z",
             "agent": {
                 "name": "elastic-node",
                 "version": "3.14.0"
@@ -159,7 +157,6 @@
                 "architecture": "x64",
                 "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "prod1.example.com",
                 "os": {
                     "platform": "darwin"
                 }
@@ -189,9 +186,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "prod1.example.com"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"

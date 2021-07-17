@@ -19,84 +19,90 @@ package api
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/apm-server/approvaltest"
 	"github.com/elastic/apm-server/beater/api/config/agent"
-	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/tests/approvals"
 )
 
 func TestConfigAgentHandler_AuthorizationMiddleware(t *testing.T) {
 	t.Run("Unauthorized", func(t *testing.T) {
 		cfg := configEnabledConfigAgent()
-		cfg.SecretToken = "1234"
+		cfg.AgentAuth.SecretToken = "1234"
 		rec, err := requestToMuxerWithPattern(cfg, AgentConfigPath)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
 	})
 
 	t.Run("Authorized", func(t *testing.T) {
 		cfg := configEnabledConfigAgent()
-		cfg.SecretToken = "1234"
-		h := map[string]string{headers.Authorization: "Bearer 1234"}
-		rec, err := requestToMuxerWithHeader(cfg, AgentConfigPath, http.MethodGet, h)
+		cfg.AgentAuth.SecretToken = "1234"
+		header := map[string]string{headers.Authorization: "Bearer 1234"}
+		queryString := map[string]string{"service.name": "service1"}
+		rec, err := requestToMuxerWithHeaderAndQueryString(cfg, AgentConfigPath, http.MethodGet, header, queryString)
 		require.NoError(t, err)
 		require.NotEqual(t, http.StatusUnauthorized, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
 	})
 }
 
 func TestConfigAgentHandler_KillSwitchMiddleware(t *testing.T) {
 	t.Run("Off", func(t *testing.T) {
-		rec, err := requestToMuxerWithPattern(config.DefaultConfig(beatertest.MockBeatVersion()), AgentConfigPath)
+		rec, err := requestToMuxerWithPattern(config.DefaultConfig(), AgentConfigPath)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
 
 	})
 
 	t.Run("On", func(t *testing.T) {
-		rec, err := requestToMuxerWithPattern(configEnabledConfigAgent(), AgentConfigPath)
+		queryString := map[string]string{"service.name": "service1"}
+		rec, err := requestToMuxerWithHeaderAndQueryString(configEnabledConfigAgent(), AgentConfigPath, http.MethodGet, nil, queryString)
 		require.NoError(t, err)
 		require.NotEqual(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
 	})
 }
 
+func TestConfigAgentHandler_DirectConfiguration(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.AgentConfigs = []config.AgentConfig{
+		{
+			Service: config.Service{Name: "service1", Environment: ""},
+			Config:  map[string]string{"key1": "val1"},
+			Etag:    "abc123",
+		},
+	}
+
+	queryString := map[string]string{"service.name": "service1"}
+	rec, err := requestToMuxerWithHeaderAndQueryString(cfg, AgentConfigPath, http.MethodGet, nil, queryString)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	approvaltest.ApproveJSON(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
+
+}
+
 func TestConfigAgentHandler_PanicMiddleware(t *testing.T) {
-	h := testHandler(t, backendAgentConfigHandler)
-	rec := &beatertest.WriterPanicOnce{}
-	c := request.NewContext()
-	c.Reset(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	h(c)
-	require.Equal(t, http.StatusInternalServerError, rec.StatusCode)
-	approvals.AssertApproveResult(t, approvalPathConfigAgent(t.Name()), rec.Body.Bytes())
+	testPanicMiddleware(t, "/config/v1/agents", approvalPathConfigAgent(t.Name()))
 }
 
 func TestConfigAgentHandler_MonitoringMiddleware(t *testing.T) {
-	h := testHandler(t, backendAgentConfigHandler)
-	c, _ := beatertest.ContextWithResponseRecorder(http.MethodPost, "/")
-
-	expected := map[request.ResultID]int{
+	testMonitoringMiddleware(t, "/config/v1/agents", agent.MonitoringMap, map[request.ResultID]int{
 		request.IDRequestCount:            1,
 		request.IDResponseCount:           1,
 		request.IDResponseErrorsCount:     1,
-		request.IDResponseErrorsForbidden: 1}
-	equal, result := beatertest.CompareMonitoringInt(h, c, expected, agent.MonitoringMap)
-	assert.True(t, equal, result)
-
+		request.IDResponseErrorsForbidden: 1,
+	})
 }
 
 func configEnabledConfigAgent() *config.Config {
-	cfg := config.DefaultConfig(beatertest.MockBeatVersion())
+	cfg := config.DefaultConfig()
 	cfg.Kibana.Enabled = true
 	cfg.Kibana.Host = "localhost:foo"
 	return cfg

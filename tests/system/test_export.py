@@ -4,95 +4,12 @@ import json
 import shutil
 from apmserver import SubCommandTest, integration_test
 from es_helper import index_name
+from yaml import Loader
 
 
 class ExportCommandTest(SubCommandTest):
     config_overrides = {"default_setup_template_settings": True}
     register_pipeline_disabled = True
-
-
-@integration_test
-class ExportConfigDefaultTest(ExportCommandTest):
-    """
-    Test export config subcommand.
-    """
-
-    def start_args(self):
-        return {
-            "extra_args": ["export", "config"],
-            "logging_args": None,
-        }
-
-    def test_export_config(self):
-        """
-        Test export default config
-        """
-        config = yaml.load(self.command_output)
-        # logging settings
-        self.assertDictEqual(
-            {"metrics": {"enabled": False}, 'files': {'rotateeverybytes': 10485760}, }, config["logging"]
-        )
-
-        # template settings
-        self.assertDictEqual(
-            {
-                "template": {
-                    "settings": {
-                        "_source": {"enabled": True},
-                        "index": {
-                            "codec": "best_compression",
-                            "mapping": {
-                                "total_fields": {"limit": 2000}
-                            },
-                            "number_of_shards": 1,
-                        },
-                    },
-                },
-            }, config["setup"])
-
-
-@integration_test
-class ExportConfigTest(ExportCommandTest):
-    """
-    Test export config subcommand.
-    """
-
-    def start_args(self):
-        return {
-            "extra_args": ["export", "config",
-                           "-E", "logging.metrics.enabled=true",
-                           "-E", "setup.template.settings.index.mapping.total_fields.limit=5",
-                           ],
-            "logging_args": None,
-        }
-
-    def test_export_config(self):
-        """
-        Test export customized config
-        """
-        config = yaml.load(self.command_output)
-        # logging settings
-        assert "metrics" in config["logging"]
-        self.assertDictEqual(
-            {"enabled": True}, config["logging"]["metrics"]
-        )
-
-        # template settings
-        self.assertDictEqual(
-            {
-                "template": {
-                    "settings": {
-                        "_source": {"enabled": True},
-                        "index": {
-                            "codec": "best_compression",
-                            "mapping": {
-                                "total_fields": {"limit": 5}
-                            },
-                            "number_of_shards": 1,
-                        },
-                    },
-                },
-            }, config["setup"])
 
 
 @integration_test

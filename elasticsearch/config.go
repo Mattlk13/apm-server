@@ -28,6 +28,7 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/common/transport"
 	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
+	"github.com/elastic/beats/v7/libbeat/outputs/elasticsearch"
 )
 
 const (
@@ -54,11 +55,21 @@ type Config struct {
 	Username     string            `config:"username"`
 	Password     string            `config:"password"`
 	APIKey       string            `config:"api_key"`
+	Headers      map[string]string `config:"headers"`
+	MaxRetries   int               `config:"max_retries"`
+
+	elasticsearch.Backoff `config:"backoff"`
 }
 
 // DefaultConfig returns a default config.
 func DefaultConfig() *Config {
-	return &Config{Hosts: []string{"localhost:9200"}, Protocol: "http", Timeout: esConnectionTimeout}
+	return &Config{
+		Hosts:      []string{"localhost:9200"},
+		Protocol:   "http",
+		Timeout:    esConnectionTimeout,
+		MaxRetries: 3,
+		Backoff:    DefaultBackoffConfig,
+	}
 }
 
 // Hosts is an array of host strings and needs to have at least one entry
@@ -72,16 +83,23 @@ func (h Hosts) Validate() error {
 	return nil
 }
 
-func connectionConfig(config *Config) (http.RoundTripper, []string, error) {
+func connectionConfig(config *Config) (http.RoundTripper, []string, http.Header, error) {
 	addrs, err := addresses(config)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	transp, err := httpTransport(config)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return transp, addrs, nil
+	var headers http.Header
+	if len(config.Headers) > 0 {
+		headers = make(http.Header)
+		for k, v := range config.Headers {
+			headers.Set(k, v)
+		}
+	}
+	return transp, addrs, headers, nil
 }
 
 func httpProxyURL(cfg *Config) (func(*http.Request) (*url.URL, error), error) {
@@ -129,10 +147,7 @@ func httpTransport(cfg *Config) (*http.Transport, error) {
 		}
 	}
 	dialer := transport.NetDialer(cfg.Timeout)
-	tlsDialer, err := transport.TLSDialer(dialer, tlsConfig, cfg.Timeout)
-	if err != nil {
-		return nil, err
-	}
+	tlsDialer := transport.TLSDialer(dialer, tlsConfig, cfg.Timeout)
 	return &http.Transport{
 		Proxy:           proxy,
 		Dial:            dialer.Dial,

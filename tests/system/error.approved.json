@@ -9,10 +9,11 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "grouping_key": "d6b3f958dfea98dc9ed2b57d5f0c48bb",
+            "grouping_name": "Cannot read property 'baz' of undefined",
             "id": "0f0e9d67c1854d21a6f44673ed561ec8",
             "log": {
                 "level": "custom log level",
@@ -95,6 +96,7 @@
             "geo": {
                 "continent_name": "North America",
                 "country_iso_code": "US",
+                "country_name": "United States",
                 "location": {
                     "lat": 37.751,
                     "lon": -97.822
@@ -106,7 +108,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "culprit": "my.module.function_name",
@@ -194,6 +196,7 @@
                 }
             ],
             "grouping_key": "50f62f37edffc4630c6655ba3ecfcf46",
+            "grouping_name": "My service could not talk to the database named foobar",
             "id": "5f0e9d64c1854d21a6f44673ed561ec8",
             "log": {
                 "level": "warning",
@@ -216,7 +219,6 @@
                         "exclude_from_grouping": false,
                         "filename": "/webpack/file/name.py",
                         "function": "foo",
-                        "library_frame": false,
                         "line": {
                             "column": 4,
                             "context": "line3",
@@ -309,7 +311,7 @@
                         "Mozilla Chrome Edge"
                     ]
                 },
-                "method": "post",
+                "method": "POST",
                 "referrer": "http://localhost:8000/test/e2e/",
                 "socket": {
                     "encrypted": true,
@@ -420,7 +422,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "exception": [
@@ -429,6 +431,7 @@
                 }
             ],
             "grouping_key": "18f82051862e494727fa20e0adc15711",
+            "grouping_name": null,
             "id": "7f0e9d68c1854d21a6f44673ed561ec8"
         },
         "event": {
@@ -507,7 +510,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "exception": [
@@ -517,6 +520,7 @@
                 }
             ],
             "grouping_key": "f6b5a2877d9b00d5b32b44c9db039f11",
+            "grouping_name": "foo is not defined",
             "id": "8f0e9d68c1854d21a6f44673ed561ec8"
         },
         "event": {

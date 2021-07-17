@@ -20,12 +20,11 @@ package root
 import (
 	"time"
 
-	"github.com/elastic/apm-server/beater/authorization"
-
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 	"github.com/elastic/beats/v7/libbeat/version"
 
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/request"
 )
 
@@ -35,14 +34,20 @@ var (
 	registry      = monitoring.Default.NewRegistry("apm-server.root")
 )
 
+// HandlerConfig holds configuration for Handler.
+type HandlerConfig struct {
+	// Version holds the APM Server version.
+	Version string
+}
+
 // Handler returns error if route does not exist,
-// otherwise returns information about the server. The detail level differs for authorized and non-authorized requests.
+// otherwise returns information about the server. The detail level differs for authenticated and anonymous requests.
 //TODO: only allow GET, HEAD requests (breaking change)
-func Handler() request.Handler {
+func Handler(cfg HandlerConfig) request.Handler {
 	serverInfo := common.MapStr{
 		"build_date": version.BuildTime().Format(time.RFC3339),
 		"build_sha":  version.Commit(),
-		"version":    version.GetDefaultVersion(),
+		"version":    cfg.Version,
 	}
 
 	return func(c *request.Context) {
@@ -51,16 +56,10 @@ func Handler() request.Handler {
 			c.Write()
 			return
 		}
-
 		c.Result.SetDefault(request.IDResponseValidOK)
-		authorized, err := c.Authorization.AuthorizedFor(c.Request.Context(), authorization.ResourceInternal)
-		if err != nil {
-			c.Result.Err = err
-		}
-		if authorized {
+		if c.Authentication.Method != auth.MethodAnonymous {
 			c.Result.Body = serverInfo
 		}
-
 		c.Write()
 	}
 }

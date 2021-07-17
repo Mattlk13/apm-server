@@ -1,4 +1,4 @@
-FROM golang:1.13.10
+FROM golang:1.16.5
 MAINTAINER Nicolas Ruflin <ruflin@elastic.co>
 
 RUN apt-get update
@@ -23,9 +23,14 @@ RUN $PYTHON_ENV/build/ve/linux/bin/pip install wheel
 RUN touch -d "Yesterday" $PYTHON_ENV/build/ve/linux/bin/activate
 
 # Download module dependencies.
-COPY go.mod $HOME
 WORKDIR $HOME
-RUN go mod download
+COPY --chown=$UID go.mod go.sum ./
+COPY --chown=$UID approvaltest/go.mod approvaltest/go.sum ./approvaltest/
+COPY --chown=$UID systemtest/go.mod systemtest/go.sum ./systemtest/
+COPY --chown=$UID internal/otel_collector/go.mod internal/otel_collector/go.sum ./internal/otel_collector/
+RUN go mod download all
+RUN cd approvaltest && go mod download
+RUN cd systemtest && go mod download
 
 # Add healthcheck for docker/healthcheck metricset to check during testing
 HEALTHCHECK CMD exit 0

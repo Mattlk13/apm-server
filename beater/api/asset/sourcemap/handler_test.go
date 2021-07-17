@@ -20,59 +20,52 @@ package sourcemap
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/apm-server/approvaltest"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/processor/asset"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/tests/loader"
-	"github.com/elastic/apm-server/transform"
 )
 
-func TestAssetHandler(t *testing.T) {
+type notifier struct {
+	notified bool
+}
 
+func (n *notifier) NotifyAdded(ctx context.Context, serviceName, serviceVersion, bundleFilepath string) {
+	n.notified = true
+}
+
+func TestAssetHandler(t *testing.T) {
 	testcases := map[string]testcaseT{
 		"method": {
 			r:    httptest.NewRequest(http.MethodGet, "/", nil),
 			code: http.StatusMethodNotAllowed,
 			body: beatertest.ResultErrWrap(request.MapResultIDToStatus[request.IDResponseErrorsMethodNotAllowed].Keyword),
 		},
-		"large": {
-			dec: func(r *http.Request) (map[string]interface{}, error) {
-				return nil, errors.New("error decoding request body too large")
-			},
-			code: http.StatusRequestEntityTooLarge,
-			body: beatertest.ResultErrWrap(fmt.Sprintf("%s: error decoding request body too large",
-				request.MapResultIDToStatus[request.IDResponseErrorsRequestTooLarge].Keyword)),
-		},
 		"decode": {
-			dec: func(r *http.Request) (map[string]interface{}, error) {
-				return nil, errors.New("foo")
-			},
-			code: http.StatusBadRequest,
-			body: beatertest.ResultErrWrap(fmt.Sprintf("%s: foo",
+			contentType: "invalid",
+			code:        http.StatusBadRequest,
+			body: beatertest.ResultErrWrap(fmt.Sprintf("%s: invalid content type: invalid",
 				request.MapResultIDToStatus[request.IDResponseErrorsDecode].Keyword)),
 		},
 		"validate": {
-			dec:  func(req *http.Request) (map[string]interface{}, error) { return nil, nil },
-			code: http.StatusBadRequest,
-			body: beatertest.ResultErrWrap(fmt.Sprintf("%s: no input", request.MapResultIDToStatus[request.IDResponseErrorsValidate].Keyword)),
-		},
-		"processorDecode": {
-			dec: func(*http.Request) (map[string]interface{}, error) {
-				return map[string]interface{}{"mockProcessor": "xyz"}, nil
-			},
-			code: http.StatusBadRequest,
-			body: beatertest.ResultErrWrap(fmt.Sprintf("%s: processor decode error", request.MapResultIDToStatus[request.IDResponseErrorsDecode].Keyword)),
+			missingServiceName: true,
+			code:               http.StatusBadRequest,
+			body:               beatertest.ResultErrWrap(fmt.Sprintf("%s: error validating sourcemap: bundle_filepath, service_name and service_version must be sent", request.MapResultIDToStatus[request.IDResponseErrorsValidate].Keyword)),
 		},
 		"shuttingDown": {
 			reporter: func(ctx context.Context, p publish.PendingReq) error {
@@ -89,107 +82,118 @@ func TestAssetHandler(t *testing.T) {
 			code: http.StatusServiceUnavailable,
 			body: beatertest.ResultErrWrap(fmt.Sprintf("%s: 500", request.MapResultIDToStatus[request.IDResponseErrorsFullQueue].Keyword)),
 		},
-		"valid": {
+		"valid-full-payload": {
+			sourcemapInput: func() string {
+				b, err := ioutil.ReadFile("../../../../testdata/sourcemap/bundle.js.map")
+				require.NoError(t, err)
+				return string(b)
+			}(),
+			reporter: func(ctx context.Context, p publish.PendingReq) error {
+				events := p.Transformable.Transform(ctx)
+				docs := beatertest.EncodeEventDocs(events...)
+				name := filepath.Join("test_approved", "TestProcessSourcemap")
+				approvaltest.ApproveEventDocs(t, name, docs, "@timestamp")
+				return nil
+			},
 			code: http.StatusAccepted,
 		},
+		"unauthorized": {
+			authorizer: func(context.Context, auth.Action, auth.Resource) error {
+				return auth.ErrUnauthorized
+			},
+			code: http.StatusForbidden,
+			body: beatertest.ResultErrWrap("unauthorized"),
+		},
+		"auth_unavailable": {
+			authorizer: func(context.Context, auth.Action, auth.Resource) error {
+				return errors.New("boom")
+			},
+			code: http.StatusServiceUnavailable,
+			body: beatertest.ResultErrWrap("service unavailable"),
+		},
 	}
-
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
-			tc.setup()
-
+			require.NoError(t, tc.setup())
 			// test assertion
 			assert.Equal(t, tc.code, tc.w.Code)
 			assert.Equal(t, tc.body, tc.w.Body.String())
-
+			assert.Equal(t, tc.code == http.StatusAccepted, tc.notifier.notified)
 		})
 	}
 }
 
 type testcaseT struct {
-	w         *httptest.ResponseRecorder
-	r         *http.Request
-	dec       RequestDecoder
-	processor asset.Processor
-	reporter  func(ctx context.Context, p publish.PendingReq) error
+	w              *httptest.ResponseRecorder
+	r              *http.Request
+	sourcemapInput string
+	contentType    string
+	reporter       func(ctx context.Context, p publish.PendingReq) error
+	authorizer     authorizerFunc
+	notifier       notifier
+
+	missingSourcemap, missingServiceName, missingServiceVersion, missingBundleFilepath bool
 
 	code int
 	body string
 }
 
-func (tc *testcaseT) setup() {
+func (tc *testcaseT) setup() error {
 	if tc.w == nil {
 		tc.w = httptest.NewRecorder()
 	}
-	if tc.r == nil {
-		tc.r = httptest.NewRequest(http.MethodPost, "/", nil)
-	}
-	if tc.dec == nil {
-		tc.dec = func(*http.Request) (map[string]interface{}, error) {
-			return map[string]interface{}{"foo": "bar"}, nil
+	if tc.authorizer == nil {
+		tc.authorizer = func(ctx context.Context, action auth.Action, resource auth.Resource) error {
+			return nil
 		}
 	}
-	if tc.processor == nil {
-		tc.processor = &mockProcessor{}
+	if tc.r == nil {
+		buf := bytes.Buffer{}
+		w := multipart.NewWriter(&buf)
+		if !tc.missingSourcemap {
+			part, err := w.CreateFormFile("sourcemap", "bundle_no_mapping.js.map")
+			if err != nil {
+				return err
+			}
+			if tc.sourcemapInput == "" {
+				tc.sourcemapInput = "sourcemap dummy string"
+			}
+			if _, err = io.Copy(part, strings.NewReader(tc.sourcemapInput)); err != nil {
+				return err
+			}
+		}
+		if !tc.missingBundleFilepath {
+			w.WriteField("bundle_filepath", "js/./test/../bundle_no_mapping.js.map")
+		}
+		if !tc.missingServiceName {
+			w.WriteField("service_name", "My service")
+		}
+		if !tc.missingServiceVersion {
+			w.WriteField("service_version", "0.1")
+		}
+		if err := w.Close(); err != nil {
+			return err
+		}
+		tc.r = httptest.NewRequest(http.MethodPost, "/", &buf)
+		if tc.contentType == "" {
+			tc.contentType = w.FormDataContentType()
+		}
+		tc.r.Header.Set("Content-Type", tc.contentType)
+		tc.r = tc.r.WithContext(auth.ContextWithAuthorizer(tc.r.Context(), tc.authorizer))
 	}
+
 	if tc.reporter == nil {
-		tc.reporter = beatertest.NilReporter
+		tc.reporter = func(context.Context, publish.PendingReq) error { return nil }
 	}
 	c := request.NewContext()
 	c.Reset(tc.w, tc.r)
-	h := Handler(tc.dec, tc.processor, transform.Config{}, tc.reporter)
+	h := Handler(tc.reporter, &tc.notifier)
 	h(c)
-}
-
-type mockProcessor struct{}
-
-func (p *mockProcessor) Validate(m map[string]interface{}) error {
-	if m == nil {
-		return errors.New("no input")
-	}
 	return nil
 }
-func (p *mockProcessor) Decode(m map[string]interface{}) ([]transform.Transformable, error) {
-	if _, ok := m["mockProcessor"]; ok {
-		return nil, errors.New("processor decode error")
-	}
-	return nil, nil
-}
-func (p *mockProcessor) Name() string {
-	return "mockProcessor"
-}
 
-func TestDecodeSourcemapFormData(t *testing.T) {
+type authorizerFunc func(context.Context, auth.Action, auth.Resource) error
 
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	fileBytes, err := loader.LoadDataAsBytes("../testdata/sourcemap/bundle.js.map")
-	assert.NoError(t, err)
-	part, err := writer.CreateFormFile("sourcemap", "bundle_no_mapping.js.map")
-	assert.NoError(t, err)
-	_, err = io.Copy(part, bytes.NewReader(fileBytes))
-	assert.NoError(t, err)
-
-	writer.WriteField("bundle_filepath", "js/./test/../bundle_no_mapping.js.map")
-	writer.WriteField("service_name", "My service")
-	writer.WriteField("service_version", "0.1")
-
-	err = writer.Close()
-	assert.NoError(t, err)
-
-	req, err := http.NewRequest("POST", "_", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	assert.NoError(t, err)
-
-	assert.NoError(t, err)
-	data, err := DecodeSourcemapFormData(req)
-	assert.NoError(t, err)
-
-	assert.Len(t, data, 4)
-	assert.Equal(t, "js/bundle_no_mapping.js.map", data["bundle_filepath"])
-	assert.Equal(t, "My service", data["service_name"])
-	assert.Equal(t, "0.1", data["service_version"])
-	assert.NotNil(t, data["sourcemap"].(string))
-	assert.Equal(t, len(fileBytes), len(data["sourcemap"].(string)))
+func (f authorizerFunc) Authorize(ctx context.Context, action auth.Action, resource auth.Resource) error {
+	return f(ctx, action, resource)
 }

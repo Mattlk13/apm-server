@@ -1,10 +1,13 @@
 {
     "events": [
         {
-            "@timestamp": "2019-12-16T12:46:58.000768068Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger/PHP",
                 "version": "3.4.12"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "processor": {
                 "event": "transaction",
@@ -20,14 +23,13 @@
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
+                "id": "00000000000000000000000046467830"
             },
             "transaction": {
                 "duration": {
                     "us": 0
                 },
-                "id": "41414646",
-                "result": "Success",
+                "id": "0000000041414646",
                 "sampled": true,
                 "type": "custom"
             }

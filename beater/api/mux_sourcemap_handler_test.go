@@ -19,91 +19,97 @@ package api
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/apm-server/approvaltest"
 	"github.com/elastic/apm-server/beater/api/asset/sourcemap"
-	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/tests/approvals"
 )
 
 func TestSourcemapHandler_AuthorizationMiddleware(t *testing.T) {
 	t.Run("Unauthorized", func(t *testing.T) {
 		cfg := cfgEnabledRUM()
-		cfg.SecretToken = "1234"
+		cfg.AgentAuth.SecretToken = "1234"
+		cfg.AgentAuth.Anonymous.Enabled = false
 		rec, err := requestToMuxerWithPattern(cfg, AssetSourcemapPath)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
 	})
-
-	t.Run("Authorized", func(t *testing.T) {
+	t.Run("Forbidden", func(t *testing.T) {
+		// anonymous access is not allowed for uploading source maps
 		cfg := cfgEnabledRUM()
-		cfg.SecretToken = "1234"
+		cfg.AgentAuth.SecretToken = "1234"
+		rec, err := requestToMuxerWithPattern(cfg, AssetSourcemapPath)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+	})
+	t.Run("Authorized", func(t *testing.T) {
+		// anonymous access is not allowed for uploading source maps
+		cfg := cfgEnabledRUM()
+		cfg.AgentAuth.SecretToken = "1234"
+		cfg.AgentAuth.Anonymous.Enabled = false
 		h := map[string]string{headers.Authorization: "Bearer 1234"}
 		rec, err := requestToMuxerWithHeader(cfg, AssetSourcemapPath, http.MethodPost, h)
 		require.NoError(t, err)
 		require.NotEqual(t, http.StatusUnauthorized, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
 	})
 }
 
 func TestSourcemapHandler_KillSwitchMiddleware(t *testing.T) {
 	t.Run("OffRum", func(t *testing.T) {
-		rec, err := requestToMuxerWithPattern(config.DefaultConfig(beatertest.MockBeatVersion()), AssetSourcemapPath)
+		rec, err := requestToMuxerWithPattern(config.DefaultConfig(), AssetSourcemapPath)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
 	})
 
 	t.Run("OffSourcemap", func(t *testing.T) {
-		cfg := config.DefaultConfig(beatertest.MockBeatVersion())
-		rum := true
-		cfg.RumConfig.Enabled = &rum
-		cfg.RumConfig.SourceMapping.Enabled = new(bool)
-		rec, err := requestToMuxerWithPattern(config.DefaultConfig(beatertest.MockBeatVersion()), AssetSourcemapPath)
+		cfg := config.DefaultConfig()
+		cfg.RumConfig.SourceMapping.Enabled = true
+		rec, err := requestToMuxerWithPattern(cfg, AssetSourcemapPath)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+	})
+
+	t.Run("DataStreams", func(t *testing.T) {
+		cfg := cfgEnabledRUM()
+		cfg.DataStreams.Enabled = true
+		rec, err := requestToMuxerWithPattern(cfg, AssetSourcemapPath)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
 	})
 
 	t.Run("On", func(t *testing.T) {
-		rec, err := requestToMuxerWithPattern(cfgEnabledRUM(), AssetSourcemapPath)
+		cfg := cfgEnabledRUM()
+		cfg.RumConfig.SourceMapping.Enabled = true
+		rec, err := requestToMuxerWithPattern(cfg, AssetSourcemapPath)
 		require.NoError(t, err)
 		require.NotEqual(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
 	})
 }
 
 func TestSourcemapHandler_PanicMiddleware(t *testing.T) {
-	h := testHandler(t, sourcemapHandler)
-	rec := &beatertest.WriterPanicOnce{}
-	c := request.NewContext()
-	c.Reset(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	h(c)
-	require.Equal(t, http.StatusInternalServerError, rec.StatusCode)
-	approvals.AssertApproveResult(t, approvalPathAsset(t.Name()), rec.Body.Bytes())
+	testPanicMiddleware(t, "/assets/v1/sourcemaps", approvalPathAsset(t.Name()))
 }
 
 func TestSourcemapHandler_MonitoringMiddleware(t *testing.T) {
-	h := testHandler(t, sourcemapHandler)
-	c, _ := beatertest.ContextWithResponseRecorder(http.MethodPost, "/")
-
 	// send GET request resulting in 403 Forbidden error as RUM is disabled by default
-	expected := map[request.ResultID]int{
+	testMonitoringMiddleware(t, "/assets/v1/sourcemaps", sourcemap.MonitoringMap, map[request.ResultID]int{
 		request.IDRequestCount:            1,
 		request.IDResponseCount:           1,
 		request.IDResponseErrorsCount:     1,
-		request.IDResponseErrorsForbidden: 1}
-
-	equal, result := beatertest.CompareMonitoringInt(h, c, expected, sourcemap.MonitoringMap)
-	assert.True(t, equal, result)
+		request.IDResponseErrorsForbidden: 1,
+	})
 }
 
 func approvalPathAsset(f string) string { return "asset/sourcemap/test_approved/integration/" + f }

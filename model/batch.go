@@ -18,44 +18,37 @@
 package model
 
 import (
-	"github.com/elastic/apm-server/transform"
+	"context"
+
+	"github.com/elastic/beats/v7/libbeat/beat"
 )
 
-type Batch struct {
-	Transactions []*Transaction
-	Spans        []*Span
-	Metricsets   []*Metricset
-	Errors       []*Error
+// BatchProcessor can be used to process a batch of events, giving the
+// opportunity to update, add or remove events.
+type BatchProcessor interface {
+	// ProcessBatch is called with a batch of events for processing.
+	//
+	// Processing may involve anything, e.g. modifying, adding, removing,
+	// aggregating, or publishing events.
+	ProcessBatch(context.Context, *Batch) error
 }
 
-// Reset resets the batch to be empty, but it retains the underlying storage.
-func (b *Batch) Reset() {
-	b.Transactions = b.Transactions[:0]
-	b.Spans = b.Spans[:0]
-	b.Metricsets = b.Metricsets[:0]
-	b.Errors = b.Errors[:0]
+// ProcessBatchFunc is a function type that implements BatchProcessor.
+type ProcessBatchFunc func(context.Context, *Batch) error
+
+// ProcessBatch calls f(ctx, b)
+func (f ProcessBatchFunc) ProcessBatch(ctx context.Context, b *Batch) error {
+	return f(ctx, b)
 }
 
-func (b *Batch) Len() int {
-	if b == nil {
-		return 0
-	}
-	return len(b.Transactions) + len(b.Spans) + len(b.Metricsets) + len(b.Errors)
-}
+// Batch is a collection of APM events.
+type Batch []APMEvent
 
-func (b *Batch) Transformables() []transform.Transformable {
-	transformables := make([]transform.Transformable, 0, b.Len())
-	for _, tx := range b.Transactions {
-		transformables = append(transformables, tx)
+// Transform transforms all events in the batch, in sequence.
+func (b *Batch) Transform(ctx context.Context) []beat.Event {
+	out := make([]beat.Event, 0, len(*b))
+	for _, event := range *b {
+		out = event.appendBeatEvent(ctx, out)
 	}
-	for _, span := range b.Spans {
-		transformables = append(transformables, span)
-	}
-	for _, metricset := range b.Metricsets {
-		transformables = append(transformables, metricset)
-	}
-	for _, err := range b.Errors {
-		transformables = append(transformables, err)
-	}
-	return transformables
+	return out
 }

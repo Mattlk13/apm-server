@@ -28,14 +28,12 @@ import (
 
 	logs "github.com/elastic/apm-server/log"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
 )
 
 func notifyListening(ctx context.Context, listenAddr net.Addr, reporter publish.Reporter) {
 	logp.NewLogger(logs.Onboarding).Info("Publishing onboarding document")
 	reporter(ctx, publish.PendingReq{
-		Transformables: []transform.Transformable{onboardingDoc{listenAddr: listenAddr.String()}},
-		Tcontext:       &transform.Context{},
+		Transformable: onboardingDoc{listenAddr: listenAddr.String()},
 	})
 }
 
@@ -43,7 +41,7 @@ type onboardingDoc struct {
 	listenAddr string
 }
 
-func (o onboardingDoc) Transform(ctx context.Context, tctx *transform.Context) []beat.Event {
+func (o onboardingDoc) Transform(ctx context.Context) []beat.Event {
 	return []beat.Event{{
 		Timestamp: time.Now(),
 		Fields: common.MapStr{

@@ -19,15 +19,12 @@ package config
 
 import (
 	"net"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
-	"github.com/elastic/beats/v7/libbeat/kibana"
 	"github.com/elastic/beats/v7/libbeat/logp"
 
 	logs "github.com/elastic/apm-server/log"
@@ -41,100 +38,79 @@ const (
 )
 
 var (
-	regexObserverVersion = regexp.MustCompile("%.*{.*observer.version.?}")
+	errInvalidAgentConfigMissingConfig = errors.New("agent_config: no config set")
 )
-
-type KibanaConfig struct {
-	Enabled             bool `config:"enabled"`
-	kibana.ClientConfig `config:",inline"`
-}
-
-func (k *KibanaConfig) Unpack(cfg *common.Config) error {
-	if err := cfg.Unpack(&k.ClientConfig); err != nil {
-		return err
-	}
-	k.Enabled = cfg.Enabled()
-	k.Host = strings.TrimRight(k.Host, "/")
-
-	return nil
-}
-
-func defaultKibanaConfig() KibanaConfig {
-	return KibanaConfig{
-		Enabled:      false,
-		ClientConfig: kibana.DefaultClientConfig(),
-	}
-}
 
 // Config holds configuration information nested under the key `apm-server`
 type Config struct {
-	Host                string                  `config:"host"`
-	MaxHeaderSize       int                     `config:"max_header_size"`
-	IdleTimeout         time.Duration           `config:"idle_timeout"`
-	ReadTimeout         time.Duration           `config:"read_timeout"`
-	WriteTimeout        time.Duration           `config:"write_timeout"`
-	MaxEventSize        int                     `config:"max_event_size"`
-	ShutdownTimeout     time.Duration           `config:"shutdown_timeout"`
-	TLS                 *tlscommon.ServerConfig `config:"ssl"`
-	MaxConnections      int                     `config:"max_connections"`
-	Expvar              *ExpvarConfig           `config:"expvar"`
-	AugmentEnabled      bool                    `config:"capture_personal_data"`
-	SelfInstrumentation *InstrumentationConfig  `config:"instrumentation"`
-	RumConfig           *RumConfig              `config:"rum"`
-	Register            *RegisterConfig         `config:"register"`
-	Mode                Mode                    `config:"mode"`
-	Kibana              KibanaConfig            `config:"kibana"`
-	AgentConfig         *AgentConfig            `config:"agent.config"`
-	SecretToken         string                  `config:"secret_token"`
-	APIKeyConfig        *APIKeyConfig           `config:"api_key"`
-	JaegerConfig        JaegerConfig            `config:"jaeger"`
-	Aggregation         AggregationConfig       `config:"aggregation"`
-	Sampling            SamplingConfig          `config:"sampling"`
+	// Host holds the hostname or address that the server should bind to
+	// when listening for requests from agents.
+	Host string `config:"host"`
+
+	// AgentAuth holds agent auth config.
+	AgentAuth AgentAuth `config:"auth"`
+
+	MaxHeaderSize             int                     `config:"max_header_size"`
+	IdleTimeout               time.Duration           `config:"idle_timeout"`
+	ReadTimeout               time.Duration           `config:"read_timeout"`
+	WriteTimeout              time.Duration           `config:"write_timeout"`
+	MaxEventSize              int                     `config:"max_event_size"`
+	ShutdownTimeout           time.Duration           `config:"shutdown_timeout"`
+	TLS                       *tlscommon.ServerConfig `config:"ssl"`
+	MaxConnections            int                     `config:"max_connections"`
+	ResponseHeaders           map[string][]string     `config:"response_headers"`
+	Expvar                    ExpvarConfig            `config:"expvar"`
+	Pprof                     PprofConfig             `config:"pprof"`
+	AugmentEnabled            bool                    `config:"capture_personal_data"`
+	SelfInstrumentation       InstrumentationConfig   `config:"instrumentation"`
+	RumConfig                 RumConfig               `config:"rum"`
+	Register                  RegisterConfig          `config:"register"`
+	Mode                      Mode                    `config:"mode"`
+	Kibana                    KibanaConfig            `config:"kibana"`
+	KibanaAgentConfig         KibanaAgentConfig       `config:"agent.config"`
+	JaegerConfig              JaegerConfig            `config:"jaeger"`
+	Aggregation               AggregationConfig       `config:"aggregation"`
+	Sampling                  SamplingConfig          `config:"sampling"`
+	DataStreams               DataStreamsConfig       `config:"data_streams"`
+	DefaultServiceEnvironment string                  `config:"default_service_environment"`
+	JavaAttacherConfig        JavaAttacherConfig      `config:"java_attacher"`
 
 	Pipeline string
-}
 
-// ExpvarConfig holds config information about exposing expvar
-type ExpvarConfig struct {
-	Enabled *bool  `config:"enabled"`
-	URL     string `config:"url"`
-}
-
-// AgentConfig holds remote agent config information
-type AgentConfig struct {
-	Cache *Cache `config:"cache"`
-}
-
-// Cache holds config information about cache expiration
-type Cache struct {
-	Expiration time.Duration `config:"expiration"`
+	AgentConfigs []AgentConfig `config:"agent_config"`
 }
 
 // NewConfig creates a Config struct based on the default config and the given input params
-func NewConfig(version string, ucfg *common.Config, outputESCfg *common.Config) (*Config, error) {
+func NewConfig(ucfg *common.Config, outputESCfg *common.Config) (*Config, error) {
 	logger := logp.NewLogger(logs.Config)
-	c := DefaultConfig(version)
+	c := DefaultConfig()
 	if err := ucfg.Unpack(c); err != nil {
 		return nil, errors.Wrap(err, "Error processing configuration")
 	}
 
-	if float64(int(c.AgentConfig.Cache.Expiration.Seconds())) != c.AgentConfig.Cache.Expiration.Seconds() {
+	if float64(int(c.KibanaAgentConfig.Cache.Expiration.Seconds())) != c.KibanaAgentConfig.Cache.Expiration.Seconds() {
 		return nil, errors.New(msgInvalidConfigAgentCfg)
 	}
 
-	if outputESCfg != nil && (outputESCfg.HasField("pipeline") || outputESCfg.HasField("pipelines")) {
-		c.Pipeline = ""
+	for _, serviceConfig := range c.AgentConfigs {
+		if err := serviceConfig.setup(); err != nil {
+			return nil, err
+		}
 	}
 
-	if err := c.RumConfig.setup(logger, outputESCfg); err != nil {
+	if err := setDeprecatedConfig(c, ucfg, logger); err != nil {
 		return nil, err
 	}
 
-	if err := c.APIKeyConfig.setup(logger, outputESCfg); err != nil {
+	if err := c.RumConfig.setup(logger, c.DataStreams.Enabled, outputESCfg); err != nil {
 		return nil, err
 	}
 
-	if err := c.SelfInstrumentation.setup(logger); err != nil {
+	if err := c.AgentAuth.setAnonymousDefaults(logger, c.RumConfig.Enabled); err != nil {
+		return nil, err
+	}
+
+	if err := c.AgentAuth.APIKey.setup(logger, outputESCfg); err != nil {
 		return nil, err
 	}
 
@@ -142,7 +118,11 @@ func NewConfig(version string, ucfg *common.Config, outputESCfg *common.Config) 
 		return nil, err
 	}
 
-	if !c.Sampling.KeepUnsampled && !c.Aggregation.Enabled {
+	if err := c.Sampling.Tail.setup(logger, outputESCfg); err != nil {
+		return nil, err
+	}
+
+	if !c.Sampling.KeepUnsampled && !c.Aggregation.Transactions.Enabled {
 		// Unsampled transactions should only be dropped
 		// when transaction aggregation is enabled in the
 		// server. This means the aggregations performed
@@ -150,20 +130,85 @@ func NewConfig(version string, ucfg *common.Config, outputESCfg *common.Config) 
 		// representation of the latency distribution.
 		logger.Warn("" +
 			"apm-server.sampling.keep_unsampled and " +
-			"apm-server.aggregation.enabled are both false, " +
+			"apm-server.aggregation.transactions.enabled are both false, " +
 			"which will lead to incorrect metrics being reported in the APM UI",
 		)
+	}
+
+	if c.DataStreams.Enabled || (outputESCfg != nil && (outputESCfg.HasField("pipeline") || outputESCfg.HasField("pipelines"))) {
+		c.Pipeline = ""
 	}
 	return c, nil
 }
 
-// IsEnabled indicates whether expvar is enabled or not
-func (c *ExpvarConfig) IsEnabled() bool {
-	return c != nil && (c.Enabled == nil || *c.Enabled)
+// setDeprecatedConfig translates deprecated top-level config attributes to the
+// current config structure.
+func setDeprecatedConfig(out *Config, in *common.Config, logger *logp.Logger) error {
+	type deprecatedRUMEventRateConfig struct {
+		Limit   *int `config:"limit"`
+		LruSize *int `config:"lru_size"`
+	}
+	type deprecatedRUMConfig struct {
+		EventRate         *deprecatedRUMEventRateConfig `config:"event_rate"`
+		AllowServiceNames []string                      `config:"allow_service_names"`
+	}
+	var deprecatedConfig struct {
+		APIKey      APIKeyAgentAuth      `config:"api_key"`
+		RUM         *deprecatedRUMConfig `config:"rum"`
+		SecretToken string               `config:"secret_token"`
+	}
+	deprecatedConfig.APIKey = defaultAPIKeyAgentAuth()
+	if err := in.Unpack(&deprecatedConfig); err != nil {
+		return err
+	}
+
+	warnIgnored := func(deprecated, replacement string) {
+		logger.Warnf("ignoring deprecated config %q as %q is defined", deprecated, replacement)
+	}
+	if deprecatedConfig.APIKey.configured {
+		// "apm-server.api_key" -> "apm-server.auth.api_key"
+		if out.AgentAuth.APIKey.configured {
+			warnIgnored("apm-server.api_key", "apm-server.auth.api_key")
+		} else {
+			out.AgentAuth.APIKey = deprecatedConfig.APIKey
+		}
+	}
+	if deprecatedConfig.RUM != nil {
+		// "apm-server.rum.event_rate" -> "apm-server.auth.anonymous.rate_limit"
+		if deprecatedConfig.RUM.EventRate != nil {
+			if out.AgentAuth.Anonymous.configured {
+				warnIgnored("apm-server.rum.event_rate", "apm-server.auth.anonymous")
+			} else {
+				if deprecatedConfig.RUM.EventRate.Limit != nil {
+					out.AgentAuth.Anonymous.RateLimit.EventLimit = *deprecatedConfig.RUM.EventRate.Limit
+				}
+				if deprecatedConfig.RUM.EventRate.LruSize != nil {
+					out.AgentAuth.Anonymous.RateLimit.IPLimit = *deprecatedConfig.RUM.EventRate.LruSize
+				}
+			}
+		}
+		// "apm-server.rum.allow_service_names" -> "apm-server.auth.anonymous.allow_service"
+		if len(deprecatedConfig.RUM.AllowServiceNames) > 0 {
+			if out.AgentAuth.Anonymous.configured {
+				warnIgnored("apm-server.rum.allow_service_names", "apm-server.auth.anonymous")
+			} else {
+				out.AgentAuth.Anonymous.AllowService = deprecatedConfig.RUM.AllowServiceNames
+			}
+		}
+	}
+	if deprecatedConfig.SecretToken != "" {
+		// "apm-server.secret_token" -> "apm-server.auth.secret_token"
+		if out.AgentAuth.SecretToken != "" {
+			warnIgnored("apm-server.secret_token", "apm-server.auth.secret_token")
+		} else {
+			out.AgentAuth.SecretToken = deprecatedConfig.SecretToken
+		}
+	}
+	return nil
 }
 
 // DefaultConfig returns a config with default settings for `apm-server` config options.
-func DefaultConfig(beatVersion string) *Config {
+func DefaultConfig() *Config {
 	return &Config{
 		Host:            net.JoinHostPort("localhost", DefaultPort),
 		MaxHeaderSize:   1 * 1024 * 1024, // 1mb
@@ -174,19 +219,23 @@ func DefaultConfig(beatVersion string) *Config {
 		MaxEventSize:    300 * 1024, // 300 kb
 		ShutdownTimeout: 5 * time.Second,
 		AugmentEnabled:  true,
-		Expvar: &ExpvarConfig{
-			Enabled: new(bool),
+		Expvar: ExpvarConfig{
+			Enabled: false,
 			URL:     "/debug/vars",
 		},
-		RumConfig:    defaultRum(beatVersion),
-		Register:     defaultRegisterConfig(true),
-		Mode:         ModeProduction,
-		Kibana:       defaultKibanaConfig(),
-		AgentConfig:  &AgentConfig{Cache: &Cache{Expiration: 30 * time.Second}},
-		Pipeline:     defaultAPMPipeline,
-		APIKeyConfig: defaultAPIKeyConfig(),
-		JaegerConfig: defaultJaeger(),
-		Aggregation:  defaultAggregationConfig(),
-		Sampling:     defaultSamplingConfig(),
+		Pprof:               PprofConfig{Enabled: false},
+		SelfInstrumentation: defaultInstrumentationConfig(),
+		RumConfig:           defaultRum(),
+		Register:            defaultRegisterConfig(),
+		Mode:                ModeProduction,
+		Kibana:              defaultKibanaConfig(),
+		KibanaAgentConfig:   defaultKibanaAgentConfig(),
+		Pipeline:            defaultAPMPipeline,
+		JaegerConfig:        defaultJaeger(),
+		Aggregation:         defaultAggregationConfig(),
+		Sampling:            defaultSamplingConfig(),
+		DataStreams:         defaultDataStreamsConfig(),
+		AgentAuth:           defaultAgentAuth(),
+		JavaAttacherConfig:  defaultJavaAttacherConfig(),
 	}
 }

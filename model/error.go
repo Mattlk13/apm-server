@@ -19,12 +19,8 @@ package model
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash"
-	"io"
 	"strconv"
 	"time"
 
@@ -32,7 +28,6 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/utility"
 )
 
@@ -47,10 +42,11 @@ var (
 const (
 	errorProcessorName = "error"
 	errorDocType       = "error"
+	ErrorsDataset      = "apm.error"
 )
 
 type Error struct {
-	ID            *string
+	ID            string
 	TransactionID string
 	TraceID       string
 	ParentID      string
@@ -58,30 +54,30 @@ type Error struct {
 	Timestamp time.Time
 	Metadata  Metadata
 
-	Culprit *string
-	Labels  *Labels
-	Page    *Page
-	HTTP    *Http
-	URL     *URL
-	Custom  *Custom
+	GroupingKey string
+	Culprit     string
+	Labels      common.MapStr
+	Page        *Page
+	HTTP        *Http
+	URL         *URL
+	Custom      common.MapStr
 
 	Exception *Exception
 	Log       *Log
 
 	TransactionSampled *bool
-	TransactionType    *string
+	TransactionType    string
 
 	Experimental interface{}
-	data         common.MapStr
 }
 
 type Exception struct {
-	Message    *string
-	Module     *string
+	Message    string
+	Module     string
 	Code       interface{}
 	Attributes interface{}
 	Stacktrace Stacktrace
-	Type       *string
+	Type       string
 	Handled    *bool
 	Cause      []Exception
 	Parent     *int
@@ -89,13 +85,13 @@ type Exception struct {
 
 type Log struct {
 	Message      string
-	Level        *string
-	ParamMessage *string
-	LoggerName   *string
+	Level        string
+	ParamMessage string
+	LoggerName   string
 	Stacktrace   Stacktrace
 }
 
-func (e *Error) Transform(ctx context.Context, tctx *transform.Context) []beat.Event {
+func (e *Error) toBeatEvent(ctx context.Context) beat.Event {
 	errorTransformations.Inc()
 
 	if e.Exception != nil {
@@ -105,225 +101,114 @@ func (e *Error) Transform(ctx context.Context, tctx *transform.Context) []beat.E
 		addStacktraceCounter(e.Log.Stacktrace)
 	}
 
-	fields := common.MapStr{
-		"error":     e.fields(ctx, tctx),
+	fields := mapStr{
+		"error":     e.fields(),
 		"processor": errorProcessorEntry,
 	}
 
 	// first set the generic metadata (order is relevant)
-	e.Metadata.Set(fields)
-	utility.Set(fields, "source", fields["client"])
+	e.Metadata.set(&fields, e.Labels)
+	if client := fields["client"]; client != nil {
+		fields["source"] = client
+	}
+
 	// then add event specific information
-	// merges with metadata labels, overrides conflicting keys
-	utility.DeepUpdate(fields, "labels", e.Labels.Fields())
-	utility.Set(fields, "http", e.HTTP.Fields())
-	urlFields := e.URL.Fields()
-	if urlFields != nil {
-		utility.Set(fields, "url", e.URL.Fields())
+	fields.maybeSetMapStr("http", e.HTTP.Fields())
+	fields.maybeSetMapStr("url", e.URL.Fields())
+	if e.Experimental != nil {
+		fields.set("experimental", e.Experimental)
 	}
-	if e.Page != nil {
-		utility.DeepUpdate(fields, "http.request.referrer", e.Page.Referer)
-		if urlFields == nil {
-			utility.Set(fields, "url", e.Page.URL.Fields())
-		}
-	}
-	utility.Set(fields, "experimental", e.Experimental)
 
 	// sampled and type is nil if an error happens outside a transaction or an (old) agent is not sending sampled info
 	// agents must send semantically correct data
-	if e.TransactionSampled != nil || e.TransactionType != nil || e.TransactionID != "" {
-		transaction := common.MapStr{}
-		if e.TransactionID != "" {
-			transaction["id"] = e.TransactionID
-		}
-		utility.Set(transaction, "type", e.TransactionType)
-		utility.Set(transaction, "sampled", e.TransactionSampled)
-		utility.Set(fields, "transaction", transaction)
-	}
+	var transaction mapStr
+	transaction.maybeSetString("id", e.TransactionID)
+	transaction.maybeSetString("type", e.TransactionType)
+	transaction.maybeSetBool("sampled", e.TransactionSampled)
+	fields.maybeSetMapStr("transaction", common.MapStr(transaction))
 
-	utility.AddID(fields, "parent", e.ParentID)
-	utility.AddID(fields, "trace", e.TraceID)
-	utility.Set(fields, "timestamp", utility.TimeAsMicros(e.Timestamp))
+	var parent, trace mapStr
+	parent.maybeSetString("id", e.ParentID)
+	trace.maybeSetString("id", e.TraceID)
+	fields.maybeSetMapStr("parent", common.MapStr(parent))
+	fields.maybeSetMapStr("trace", common.MapStr(trace))
+	fields.maybeSetMapStr("timestamp", utility.TimeAsMicros(e.Timestamp))
 
-	return []beat.Event{
-		{
-			Fields:    fields,
-			Timestamp: e.Timestamp,
-		},
+	return beat.Event{
+		Fields:    common.MapStr(fields),
+		Timestamp: e.Timestamp,
 	}
 }
 
-func (e *Error) fields(ctx context.Context, tctx *transform.Context) common.MapStr {
-	e.data = common.MapStr{}
-	e.add("id", e.ID)
-	e.add("page", e.Page.Fields())
+func (e *Error) fields() common.MapStr {
+	var fields mapStr
+	fields.maybeSetString("id", e.ID)
+	fields.maybeSetMapStr("page", e.Page.Fields())
 
 	exceptionChain := flattenExceptionTree(e.Exception)
-	e.addException(ctx, tctx, exceptionChain)
-	e.addLog(ctx, tctx)
+	if exception := e.exceptionFields(exceptionChain); len(exception) > 0 {
+		fields.set("exception", exception)
+	}
+	fields.maybeSetMapStr("log", e.logFields())
 
-	e.updateCulprit(tctx)
-	e.add("culprit", e.Culprit)
-	e.add("custom", e.Custom.Fields())
-
-	e.add("grouping_key", e.calcGroupingKey(exceptionChain))
-
-	return e.data
+	fields.maybeSetString("culprit", e.Culprit)
+	fields.maybeSetMapStr("custom", customFields(e.Custom))
+	fields.maybeSetString("grouping_key", e.GroupingKey)
+	return common.MapStr(fields)
 }
 
-func (e *Error) updateCulprit(tctx *transform.Context) {
-	if tctx.Config.SourcemapStore == nil {
-		return
-	}
-	var fr *StacktraceFrame
-	if e.Log != nil {
-		fr = findSmappedNonLibraryFrame(e.Log.Stacktrace)
-	}
-	if fr == nil && e.Exception != nil {
-		fr = findSmappedNonLibraryFrame(e.Exception.Stacktrace)
-	}
-	if fr == nil {
-		return
-	}
-	var culprit string
-	if fr.Filename != nil {
-		culprit = *fr.Filename
-	} else if fr.Classname != nil {
-		culprit = *fr.Classname
-	}
-	if fr.Function != nil {
-		culprit += fmt.Sprintf(" in %v", *fr.Function)
-	}
-	e.Culprit = &culprit
-}
-
-func findSmappedNonLibraryFrame(frames []*StacktraceFrame) *StacktraceFrame {
-	for _, fr := range frames {
-		if fr.IsSourcemapApplied() && !fr.IsLibraryFrame() {
-			return fr
-		}
-	}
-	return nil
-}
-
-func (e *Error) addException(ctx context.Context, tctx *transform.Context, chain []Exception) {
+func (e *Error) exceptionFields(chain []Exception) []common.MapStr {
 	var result []common.MapStr
 	for _, exception := range chain {
-		ex := common.MapStr{}
-		utility.Set(ex, "message", exception.Message)
-		utility.Set(ex, "module", exception.Module)
-		utility.Set(ex, "attributes", exception.Attributes)
-		utility.Set(ex, "type", exception.Type)
-		utility.Set(ex, "handled", exception.Handled)
-		utility.Set(ex, "parent", exception.Parent)
+		var ex mapStr
+		ex.maybeSetString("message", exception.Message)
+		ex.maybeSetString("module", exception.Module)
+		ex.maybeSetString("type", exception.Type)
+		ex.maybeSetBool("handled", exception.Handled)
+		if exception.Parent != nil {
+			ex.set("parent", exception.Parent)
+		}
+		if exception.Attributes != nil {
+			ex.set("attributes", exception.Attributes)
+		}
 
 		switch code := exception.Code.(type) {
 		case int:
-			utility.Set(ex, "code", strconv.Itoa(code))
+			ex.set("code", strconv.Itoa(code))
 		case float64:
-			utility.Set(ex, "code", fmt.Sprintf("%.0f", code))
+			ex.set("code", fmt.Sprintf("%.0f", code))
 		case string:
-			utility.Set(ex, "code", code)
+			ex.set("code", code)
 		case json.Number:
-			utility.Set(ex, "code", code.String())
+			ex.set("code", code.String())
 		}
 
-		st := exception.Stacktrace.Transform(ctx, tctx, &e.Metadata.Service)
-		utility.Set(ex, "stacktrace", st)
+		if n := len(exception.Stacktrace); n > 0 {
+			frames := make([]common.MapStr, n)
+			for i, frame := range exception.Stacktrace {
+				frames[i] = frame.transform()
+			}
+			ex.set("stacktrace", frames)
+		}
 
-		result = append(result, ex)
+		result = append(result, common.MapStr(ex))
 	}
-
-	e.add("exception", result)
+	return result
 }
 
-func (e *Error) addLog(ctx context.Context, tctx *transform.Context) {
+func (e *Error) logFields() common.MapStr {
 	if e.Log == nil {
-		return
+		return nil
 	}
-	log := common.MapStr{}
-	utility.Set(log, "message", e.Log.Message)
-	utility.Set(log, "param_message", e.Log.ParamMessage)
-	utility.Set(log, "logger_name", e.Log.LoggerName)
-	utility.Set(log, "level", e.Log.Level)
-	st := e.Log.Stacktrace.Transform(ctx, tctx, &e.Metadata.Service)
-	utility.Set(log, "stacktrace", st)
-
-	e.add("log", log)
-}
-
-type groupingKey struct {
-	hash  hash.Hash
-	empty bool
-}
-
-func newGroupingKey() *groupingKey {
-	return &groupingKey{
-		hash:  md5.New(),
-		empty: true,
+	var log mapStr
+	log.maybeSetString("message", e.Log.Message)
+	log.maybeSetString("param_message", e.Log.ParamMessage)
+	log.maybeSetString("logger_name", e.Log.LoggerName)
+	log.maybeSetString("level", e.Log.Level)
+	if st := e.Log.Stacktrace.transform(); len(st) > 0 {
+		log.set("stacktrace", st)
 	}
-}
-
-func (k *groupingKey) add(s *string) bool {
-	if s == nil {
-		return false
-	}
-	io.WriteString(k.hash, *s)
-	k.empty = false
-	return true
-}
-
-func (k *groupingKey) addEither(str ...*string) {
-	for _, s := range str {
-		if ok := k.add(s); ok {
-			break
-		}
-	}
-}
-
-func (k *groupingKey) String() string {
-	return hex.EncodeToString(k.hash.Sum(nil))
-}
-
-// calcGroupingKey computes a value for deduplicating errors - events with
-// same grouping key can be collapsed together.
-func (e *Error) calcGroupingKey(chain []Exception) string {
-	k := newGroupingKey()
-	var stacktrace Stacktrace
-
-	for _, ex := range chain {
-		k.add(ex.Type)
-		stacktrace = append(stacktrace, ex.Stacktrace...)
-	}
-
-	if e.Log != nil {
-		k.add(e.Log.ParamMessage)
-		if len(stacktrace) == 0 {
-			stacktrace = e.Log.Stacktrace
-		}
-	}
-
-	for _, fr := range stacktrace {
-		if fr.ExcludeFromGrouping {
-			continue
-		}
-		k.addEither(fr.Module, fr.Filename, fr.Classname)
-		k.add(fr.Function)
-	}
-	if k.empty {
-		for _, ex := range chain {
-			k.add(ex.Message)
-		}
-	}
-	if k.empty && e.Log != nil {
-		k.add(&e.Log.Message)
-	}
-
-	return k.String()
-}
-
-func (e *Error) add(key string, val interface{}) {
-	utility.Set(e.data, key, val)
+	return common.MapStr(log)
 }
 
 func addStacktraceCounter(st Stacktrace) {

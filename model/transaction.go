@@ -18,20 +18,19 @@
 package model
 
 import (
-	"context"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/utility"
 )
 
 const (
 	transactionProcessorName = "transaction"
 	transactionDocType       = "transaction"
+	TracesDataset            = "apm"
 )
 
 var (
@@ -49,27 +48,40 @@ type Transaction struct {
 
 	Timestamp time.Time
 
-	Type      string
-	Name      string
-	Result    string
-	Duration  float64
-	Marks     TransactionMarks
-	Message   *Message
-	Sampled   *bool
-	SpanCount SpanCount
-	Page      *Page
-	HTTP      *Http
-	URL       *URL
-	Labels    *Labels
-	Custom    *Custom
+	Type           string
+	Name           string
+	Result         string
+	Outcome        string
+	Duration       float64
+	Marks          TransactionMarks
+	Message        *Message
+	Sampled        *bool
+	SpanCount      SpanCount
+	Page           *Page
+	HTTP           *Http
+	URL            *URL
+	Labels         common.MapStr
+	Custom         common.MapStr
+	UserExperience *UserExperience
+	Session        TransactionSession
 
 	Experimental interface{}
 
-	// RepresentativeCount, if positive, holds the approximate number of
+	// RepresentativeCount holds the approximate number of
 	// transactions that this transaction represents for aggregation.
 	//
 	// This may be used for scaling metrics; it is not indexed.
 	RepresentativeCount float64
+}
+
+type TransactionSession struct {
+	// ID holds a session ID for grouping a set of related transactions.
+	ID string
+
+	// Sequence holds an optional sequence number for a transaction
+	// within a session. Sequence is ignored if it is zero or if
+	// ID is empty.
+	Sequence int
 }
 
 type SpanCount struct {
@@ -87,8 +99,9 @@ func (e *Transaction) fields() common.MapStr {
 	fields.maybeSetString("result", e.Result)
 	fields.maybeSetMapStr("marks", e.Marks.fields())
 	fields.maybeSetMapStr("page", e.Page.Fields())
-	fields.maybeSetMapStr("custom", e.Custom.Fields())
+	fields.maybeSetMapStr("custom", customFields(e.Custom))
 	fields.maybeSetMapStr("message", e.Message.Fields())
+	fields.maybeSetMapStr("experience", e.UserExperience.Fields())
 	if e.SpanCount.Dropped != nil || e.SpanCount.Started != nil {
 		spanCount := common.MapStr{}
 		if e.SpanCount.Dropped != nil {
@@ -105,38 +118,39 @@ func (e *Transaction) fields() common.MapStr {
 	return common.MapStr(fields)
 }
 
-func (e *Transaction) Transform(_ context.Context, _ *transform.Context) []beat.Event {
+func (e *Transaction) toBeatEvent() beat.Event {
 	transactionTransformations.Inc()
 
-	fields := common.MapStr{
+	fields := mapStr{
 		"processor":        transactionProcessorEntry,
 		transactionDocType: e.fields(),
 	}
 
 	// first set generic metadata (order is relevant)
-	e.Metadata.Set(fields)
-	utility.Set(fields, "source", fields["client"])
+	e.Metadata.set(&fields, e.Labels)
+	if client := fields["client"]; client != nil {
+		fields["source"] = client
+	}
 
 	// then merge event specific information
-	utility.AddID(fields, "parent", e.ParentID)
-	utility.AddID(fields, "trace", e.TraceID)
-	utility.Set(fields, "timestamp", utility.TimeAsMicros(e.Timestamp))
-	// merges with metadata labels, overrides conflicting keys
-	utility.DeepUpdate(fields, "labels", e.Labels.Fields())
-	utility.Set(fields, "http", e.HTTP.Fields())
-	urlFields := e.URL.Fields()
-	if urlFields != nil {
-		utility.Set(fields, "url", e.URL.Fields())
+	var parent, trace mapStr
+	parent.maybeSetString("id", e.ParentID)
+	trace.maybeSetString("id", e.TraceID)
+	fields.maybeSetMapStr("parent", common.MapStr(parent))
+	fields.maybeSetMapStr("trace", common.MapStr(trace))
+	fields.maybeSetMapStr("timestamp", utility.TimeAsMicros(e.Timestamp))
+	fields.maybeSetMapStr("http", e.HTTP.Fields())
+	fields.maybeSetMapStr("url", e.URL.Fields())
+	fields.maybeSetMapStr("session", e.Session.fields())
+	if e.Experimental != nil {
+		fields.set("experimental", e.Experimental)
 	}
-	if e.Page != nil {
-		utility.DeepUpdate(fields, "http.request.referrer", e.Page.Referer)
-		if urlFields == nil {
-			utility.Set(fields, "url", e.Page.URL.Fields())
-		}
-	}
-	utility.Set(fields, "experimental", e.Experimental)
+	common.MapStr(fields).Put("event.outcome", e.Outcome)
 
-	return []beat.Event{{Fields: fields, Timestamp: e.Timestamp}}
+	return beat.Event{
+		Timestamp: e.Timestamp,
+		Fields:    common.MapStr(fields),
+	}
 }
 
 type TransactionMarks map[string]TransactionMark
@@ -147,7 +161,7 @@ func (m TransactionMarks) fields() common.MapStr {
 	}
 	out := make(mapStr, len(m))
 	for k, v := range m {
-		out.maybeSetMapStr(k, v.fields())
+		out.maybeSetMapStr(sanitizeLabelKey(k), v.fields())
 	}
 	return common.MapStr(out)
 }
@@ -160,7 +174,18 @@ func (m TransactionMark) fields() common.MapStr {
 	}
 	out := make(common.MapStr, len(m))
 	for k, v := range m {
-		out[k] = common.Float(v)
+		out[sanitizeLabelKey(k)] = common.Float(v)
+	}
+	return out
+}
+
+func (s *TransactionSession) fields() common.MapStr {
+	if s.ID == "" {
+		return nil
+	}
+	out := common.MapStr{"id": s.ID}
+	if s.Sequence > 0 {
+		out["sequence"] = s.Sequence
 	}
 	return out
 }

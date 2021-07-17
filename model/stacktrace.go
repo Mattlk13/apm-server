@@ -18,80 +18,102 @@
 package model
 
 import (
-	"context"
-
 	"github.com/elastic/beats/v7/libbeat/common"
-	"github.com/elastic/beats/v7/libbeat/logp"
-
-	logs "github.com/elastic/apm-server/log"
-
-	"github.com/elastic/apm-server/transform"
-)
-
-var (
-	msgServiceInvalidForSourcemapping = "Cannot apply sourcemap without a service name or service version"
 )
 
 type Stacktrace []*StacktraceFrame
 
-func (st *Stacktrace) Transform(ctx context.Context, tctx *transform.Context, service *Service) []common.MapStr {
-	if st == nil {
-		return nil
-	}
-	// source map algorithm:
-	// apply source mapping frame by frame
-	// if no source map could be found, set updated to false and set sourcemap error
-	// otherwise use source map library for mapping and update
-	// - filename: only if it was found
-	// - function:
-	//   * should be moved down one stack trace frame,
-	//   * the function name of the first frame is set to <anonymous>
-	//   * if one frame is not found in the source map, this frame is left out and
-	//   the function name from the previous frame is used
-	//   * if a mapping could be applied but no function name is found, the
-	//   function name for the next frame is set to <unknown>
-	// - colno
-	// - lineno
-	// - abs_path is set to the cleaned abs_path
-	// - sourcmeap.updated is set to true
+type StacktraceFrame struct {
+	AbsPath      string
+	Filename     string
+	Classname    string
+	Lineno       *int
+	Colno        *int
+	ContextLine  string
+	Module       string
+	Function     string
+	LibraryFrame bool
+	Vars         common.MapStr
+	PreContext   []string
+	PostContext  []string
 
-	if tctx.Config.SourcemapStore == nil {
-		return st.transform(tctx, noSourcemapping)
-	}
-	if service == nil || service.Name == "" || service.Version == "" {
-		logp.NewLogger(logs.Stacktrace).Warn(msgServiceInvalidForSourcemapping)
-		return st.transform(tctx, noSourcemapping)
-	}
+	ExcludeFromGrouping bool
 
-	var errMsg string
-	var sourcemapErrorSet = map[string]interface{}{}
-	logger := logp.NewLogger(logs.Stacktrace)
-	fct := "<anonymous>"
-	return st.transform(tctx, func(frame *StacktraceFrame) {
-		fct, errMsg = frame.applySourcemap(ctx, tctx.Config.SourcemapStore, service, fct)
-		if errMsg != "" {
-			if _, ok := sourcemapErrorSet[errMsg]; !ok {
-				logger.Warn(errMsg)
-				sourcemapErrorSet[errMsg] = nil
-			}
-		}
-	})
+	SourcemapUpdated bool
+	SourcemapError   string
+	Original         Original
 }
 
-func (st *Stacktrace) transform(ctx *transform.Context, apply func(*StacktraceFrame)) []common.MapStr {
-	frameCount := len(*st)
-	if frameCount == 0 {
+type Original struct {
+	AbsPath      string
+	Filename     string
+	Classname    string
+	Lineno       *int
+	Colno        *int
+	Function     string
+	LibraryFrame bool
+}
+
+func (st Stacktrace) transform() []common.MapStr {
+	if len(st) == 0 {
 		return nil
 	}
-
-	var fr *StacktraceFrame
-	frames := make([]common.MapStr, frameCount)
-	for idx := frameCount - 1; idx >= 0; idx-- {
-		fr = (*st)[idx]
-		apply(fr)
-		frames[idx] = fr.Transform(ctx)
+	frames := make([]common.MapStr, len(st))
+	for i, frame := range st {
+		frames[i] = frame.transform()
 	}
 	return frames
 }
 
-func noSourcemapping(_ *StacktraceFrame) {}
+func (s *StacktraceFrame) transform() common.MapStr {
+	var m mapStr
+	m.maybeSetString("filename", s.Filename)
+	m.maybeSetString("classname", s.Classname)
+	m.maybeSetString("abs_path", s.AbsPath)
+	m.maybeSetString("module", s.Module)
+	m.maybeSetString("function", s.Function)
+	m.maybeSetMapStr("vars", s.Vars)
+
+	if s.LibraryFrame {
+		m.set("library_frame", s.LibraryFrame)
+	}
+	m.set("exclude_from_grouping", s.ExcludeFromGrouping)
+
+	var context mapStr
+	if len(s.PreContext) > 0 {
+		context.set("pre", s.PreContext)
+	}
+	if len(s.PostContext) > 0 {
+		context.set("post", s.PostContext)
+	}
+	m.maybeSetMapStr("context", common.MapStr(context))
+
+	var line mapStr
+	line.maybeSetIntptr("number", s.Lineno)
+	line.maybeSetIntptr("column", s.Colno)
+	line.maybeSetString("context", s.ContextLine)
+	m.maybeSetMapStr("line", common.MapStr(line))
+
+	var sm mapStr
+	if s.SourcemapUpdated {
+		sm.set("updated", true)
+	}
+	sm.maybeSetString("error", s.SourcemapError)
+	m.maybeSetMapStr("sourcemap", common.MapStr(sm))
+
+	var orig mapStr
+	if s.Original.LibraryFrame {
+		orig.set("library_frame", s.Original.LibraryFrame)
+	}
+	if s.SourcemapUpdated {
+		orig.maybeSetString("filename", s.Original.Filename)
+		orig.maybeSetString("classname", s.Original.Classname)
+		orig.maybeSetString("abs_path", s.Original.AbsPath)
+		orig.maybeSetString("function", s.Original.Function)
+		orig.maybeSetIntptr("colno", s.Original.Colno)
+		orig.maybeSetIntptr("lineno", s.Original.Lineno)
+	}
+	m.maybeSetMapStr("original", common.MapStr(orig))
+
+	return common.MapStr(m)
+}

@@ -7,10 +7,11 @@
             "version": "2.20.1"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "event": {
-            "ingested": "2020-04-22T14:57:41.042655Z"
+            "ingested": "2020-08-11T09:58:54.379837Z",
+            "outcome": "unknown"
         },
         "host": {
             "hostname": "host01",
@@ -50,7 +51,7 @@
             "us": 1576827704953864
         },
         "trace": {
-            "id": "7be2fd98d0973be3"
+            "id": "00000000000000007be2fd98d0973be3"
         },
         "transaction": {
             "duration": {
@@ -58,7 +59,6 @@
             },
             "id": "7be2fd98d0973be3",
             "name": "Driver::findNearest",
-            "result": "Success",
             "sampled": true,
             "type": "custom"
         }
@@ -71,7 +71,7 @@
             "version": "2.20.1"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "exception": [
@@ -80,12 +80,13 @@
                 }
             ],
             "grouping_key": "dd09a7d0d9dde0adfcd694967c5a88de",
+            "grouping_name": "Retrying GetDriver after error",
             "log": {
                 "message": "Retrying GetDriver after error"
             }
         },
         "event": {
-            "ingested": "2020-04-22T14:57:41.091071Z"
+            "ingested": "2020-08-11T09:58:54.454089Z"
         },
         "host": {
             "hostname": "host01",
@@ -93,9 +94,9 @@
             "name": "host01"
         },
         "observer": {
-            "ephemeral_id": "b759a57d-4daa-4708-a3ad-18c50d8c940f",
-            "hostname": "ix.lan",
-            "id": "3dfbe204-d39c-4f40-8283-de713063099c",
+            "ephemeral_id": "97a0be74-0ec2-433d-b3f4-8853ae5504c4",
+            "hostname": "goat",
+            "id": "a20fd88c-dddf-4e6e-8bcb-b13e08e0b4ce",
             "type": "apm-server",
             "version": "8.0.0",
             "version_major": 8
@@ -120,7 +121,7 @@
             "us": 1576827705007552
         },
         "trace": {
-            "id": "7be2fd98d0973be3"
+            "id": "00000000000000007be2fd98d0973be3"
         },
         "transaction": {
             "id": "7be2fd98d0973be3",
@@ -135,7 +136,7 @@
             "version": "2.20.1"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "exception": [
@@ -144,12 +145,13 @@
                 }
             ],
             "grouping_key": "dd09a7d0d9dde0adfcd694967c5a88de",
+            "grouping_name": "Retrying GetDriver after error",
             "log": {
                 "message": "Retrying GetDriver after error"
             }
         },
         "event": {
-            "ingested": "2020-04-22T14:57:41.095868Z"
+            "ingested": "2020-08-11T09:58:54.454199Z"
         },
         "host": {
             "hostname": "host01",
@@ -157,9 +159,9 @@
             "name": "host01"
         },
         "observer": {
-            "ephemeral_id": "b759a57d-4daa-4708-a3ad-18c50d8c940f",
-            "hostname": "ix.lan",
-            "id": "3dfbe204-d39c-4f40-8283-de713063099c",
+            "ephemeral_id": "97a0be74-0ec2-433d-b3f4-8853ae5504c4",
+            "hostname": "goat",
+            "id": "a20fd88c-dddf-4e6e-8bcb-b13e08e0b4ce",
             "type": "apm-server",
             "version": "8.0.0",
             "version_major": 8
@@ -184,7 +186,7 @@
             "us": 1576827705089431
         },
         "trace": {
-            "id": "7be2fd98d0973be3"
+            "id": "00000000000000007be2fd98d0973be3"
         },
         "transaction": {
             "id": "7be2fd98d0973be3",
@@ -199,7 +201,7 @@
             "version": "2.20.1"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "error": {
             "exception": [
@@ -208,12 +210,13 @@
                 }
             ],
             "grouping_key": "dd09a7d0d9dde0adfcd694967c5a88de",
+            "grouping_name": "Retrying GetDriver after error",
             "log": {
                 "message": "Retrying GetDriver after error"
             }
         },
         "event": {
-            "ingested": "2020-04-22T14:57:41.096227Z"
+            "ingested": "2020-08-11T09:58:54.463556Z"
         },
         "host": {
             "hostname": "host01",
@@ -221,9 +224,9 @@
             "name": "host01"
         },
         "observer": {
-            "ephemeral_id": "b759a57d-4daa-4708-a3ad-18c50d8c940f",
-            "hostname": "ix.lan",
-            "id": "3dfbe204-d39c-4f40-8283-de713063099c",
+            "ephemeral_id": "97a0be74-0ec2-433d-b3f4-8853ae5504c4",
+            "hostname": "goat",
+            "id": "a20fd88c-dddf-4e6e-8bcb-b13e08e0b4ce",
             "type": "apm-server",
             "version": "8.0.0",
             "version_major": 8
@@ -248,7 +251,7 @@
             "us": 1576827705172530
         },
         "trace": {
-            "id": "7be2fd98d0973be3"
+            "id": "00000000000000007be2fd98d0973be3"
         },
         "transaction": {
             "id": "7be2fd98d0973be3",

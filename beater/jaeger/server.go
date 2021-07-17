@@ -33,15 +33,25 @@ import (
 	"github.com/elastic/beats/v7/libbeat/logp"
 
 	"github.com/elastic/apm-server/agentcfg"
-	"github.com/elastic/apm-server/beater/authorization"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/config"
-	"github.com/elastic/apm-server/kibana"
-	processor "github.com/elastic/apm-server/processor/otel"
-	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
+	"github.com/elastic/apm-server/beater/interceptors"
+	logs "github.com/elastic/apm-server/log"
+	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-server/processor/otel"
 )
 
+// ElasticAuthTag is the name of the agent tag that will be used for auth.
+// The tag value should be "Bearer <secret token" or "ApiKey <api key>".
+//
+// This is only relevant to the gmuxed gRPC server.
+const ElasticAuthTag = "elastic-apm-auth"
+
 // Server manages Jaeger gRPC and HTTP servers, providing methods for starting and stopping them.
+//
+// NOTE(axw) the standalone Jaeger gRPC and HTTP servers provided by this package are deprecated,
+// and will be removed in a future release. Jaeger gRPC is now served on the primary APM Server
+// port, muxed with Elastic APM HTTP traffic.
 type Server struct {
 	logger *logp.Logger
 	grpc   struct {
@@ -55,29 +65,41 @@ type Server struct {
 }
 
 // NewServer creates a new Server.
-func NewServer(logger *logp.Logger, cfg *config.Config, tracer *apm.Tracer, reporter publish.Reporter) (*Server, error) {
+func NewServer(
+	logger *logp.Logger,
+	cfg *config.Config,
+	tracer *apm.Tracer,
+	processor model.BatchProcessor,
+	fetcher agentcfg.Fetcher,
+) (*Server, error) {
 	if !cfg.JaegerConfig.GRPC.Enabled && !cfg.JaegerConfig.HTTP.Enabled {
 		return nil, nil
 	}
-	traceConsumer := &processor.Consumer{
-		Reporter:        reporter,
-		TransformConfig: transform.Config{},
-	}
+	traceConsumer := &otel.Consumer{Processor: processor}
 
 	srv := &Server{logger: logger}
 	if cfg.JaegerConfig.GRPC.Enabled {
-		// By default auth is not required for Jaeger - users must explicitly specify which tag to use.
-		auth := noAuth
+		var agentAuth config.AgentAuth
 		if cfg.JaegerConfig.GRPC.AuthTag != "" {
-			// TODO(axw) share auth builder with beater/api.
-			authBuilder, err := authorization.NewBuilder(cfg)
-			if err != nil {
-				return nil, err
-			}
-			auth = makeAuthFunc(
-				cfg.JaegerConfig.GRPC.AuthTag,
-				authBuilder.ForPrivilege(authorization.PrivilegeEventWrite.Action),
-			)
+			// By default auth is not required for Jaeger - users
+			// must explicitly specify which tag to use.
+			agentAuth = cfg.AgentAuth
+		}
+		authenticator, err := auth.NewAuthenticator(agentAuth)
+		if err != nil {
+			return nil, err
+		}
+
+		logger = logger.Named(logs.Jaeger)
+		grpcInterceptors := []grpc.UnaryServerInterceptor{
+			apmgrpc.NewUnaryServerInterceptor(
+				apmgrpc.WithRecovery(),
+				apmgrpc.WithTracer(tracer),
+			),
+			interceptors.Logging(logger),
+			interceptors.Metrics(logger, RegistryMonitoringMaps),
+			interceptors.Timeout(),
+			interceptors.Auth(MethodAuthenticators(authenticator, cfg.JaegerConfig.GRPC.AuthTag)),
 		}
 
 		// TODO(axw) should the listener respect cfg.MaxConnections?
@@ -85,28 +107,14 @@ func NewServer(logger *logp.Logger, cfg *config.Config, tracer *apm.Tracer, repo
 		if err != nil {
 			return nil, err
 		}
-		grpcOptions := []grpc.ServerOption{grpc.UnaryInterceptor(apmgrpc.NewUnaryServerInterceptor(
-			apmgrpc.WithRecovery(),
-			apmgrpc.WithTracer(tracer))),
-		}
+		grpcOptions := []grpc.ServerOption{grpc.ChainUnaryInterceptor(grpcInterceptors...)}
 		if cfg.JaegerConfig.GRPC.TLS != nil {
 			creds := credentials.NewTLS(cfg.JaegerConfig.GRPC.TLS)
 			grpcOptions = append(grpcOptions, grpc.Creds(creds))
 		}
 		srv.grpc.server = grpc.NewServer(grpcOptions...)
 		srv.grpc.listener = grpcListener
-
-		api_v2.RegisterCollectorServiceServer(srv.grpc.server,
-			&grpcCollector{logger, auth, traceConsumer})
-
-		var client kibana.Client
-		var fetcher *agentcfg.Fetcher
-		if cfg.Kibana.Enabled {
-			client = kibana.NewConnectingClient(&cfg.Kibana.ClientConfig)
-			fetcher = agentcfg.NewFetcher(client, cfg.AgentConfig.Cache.Expiration)
-		}
-		api_v2.RegisterSamplingManagerServer(srv.grpc.server,
-			&grpcSampler{logger, client, fetcher})
+		RegisterGRPCServices(srv.grpc.server, logger, processor, fetcher)
 	}
 	if cfg.JaegerConfig.HTTP.Enabled {
 		// TODO(axw) should the listener respect cfg.MaxConnections?
@@ -128,6 +136,18 @@ func NewServer(logger *logp.Logger, cfg *config.Config, tracer *apm.Tracer, repo
 		}
 	}
 	return srv, nil
+}
+
+// RegisterGRPCServices registers Jaeger gRPC services with srv.
+func RegisterGRPCServices(
+	srv *grpc.Server,
+	logger *logp.Logger,
+	processor model.BatchProcessor,
+	fetcher agentcfg.Fetcher,
+) {
+	traceConsumer := &otel.Consumer{Processor: processor}
+	api_v2.RegisterCollectorServiceServer(srv, &grpcCollector{traceConsumer})
+	api_v2.RegisterSamplingManagerServer(srv, &grpcSampler{logger, fetcher})
 }
 
 // Serve accepts gRPC and HTTP connections, and handles Jaeger requests.

@@ -19,27 +19,32 @@ package api
 
 import (
 	"net/http"
+	"net/http/pprof"
 	"regexp"
 
+	"github.com/pkg/errors"
+
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/logp"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/beats/v7/libbeat/logp"
-
-	"github.com/elastic/apm-server/beater/api/asset/sourcemap"
+	"github.com/elastic/apm-server/agentcfg"
+	apisourcemap "github.com/elastic/apm-server/beater/api/asset/sourcemap"
 	"github.com/elastic/apm-server/beater/api/config/agent"
 	"github.com/elastic/apm-server/beater/api/intake"
 	"github.com/elastic/apm-server/beater/api/profile"
 	"github.com/elastic/apm-server/beater/api/root"
-	"github.com/elastic/apm-server/beater/authorization"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/middleware"
+	"github.com/elastic/apm-server/beater/ratelimit"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/kibana"
 	logs "github.com/elastic/apm-server/log"
-	psourcemap "github.com/elastic/apm-server/processor/asset/sourcemap"
+	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-server/model/modelprocessor"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
+	"github.com/elastic/apm-server/sourcemap"
 )
 
 const (
@@ -67,186 +72,250 @@ const (
 	IntakeRUMV3Path = "/intake/v3/rum/events"
 )
 
-type route struct {
-	path      string
-	handlerFn func(*config.Config, *authorization.Builder, publish.Reporter) (request.Handler, error)
-}
-
 // NewMux registers apm handlers to paths building up the APM Server API.
-func NewMux(beaterConfig *config.Config, report publish.Reporter) (*http.ServeMux, error) {
+func NewMux(
+	beatInfo beat.Info,
+	beaterConfig *config.Config,
+	report publish.Reporter,
+	batchProcessor model.BatchProcessor,
+	fetcher agentcfg.Fetcher,
+	ratelimitStore *ratelimit.Store,
+	sourcemapStore *sourcemap.Store,
+) (*http.ServeMux, error) {
 	pool := request.NewContextPool()
 	mux := http.NewServeMux()
 	logger := logp.NewLogger(logs.Handler)
 
-	auth, err := authorization.NewBuilder(beaterConfig)
+	auth, err := auth.NewAuthenticator(beaterConfig.AgentAuth)
 	if err != nil {
 		return nil, err
 	}
 
-	routeMap := []route{
-		{RootPath, rootHandler},
-		{AssetSourcemapPath, sourcemapHandler},
-		{AgentConfigPath, backendAgentConfigHandler},
-		{AgentConfigRUMPath, rumAgentConfigHandler},
-		{IntakeRUMPath, rumIntakeHandler},
-		{IntakeRUMV3Path, rumV3IntakeHandler},
-		{IntakePath, backendIntakeHandler},
+	builder := routeBuilder{
+		info:           beatInfo,
+		cfg:            beaterConfig,
+		authenticator:  auth,
+		reporter:       report,
+		batchProcessor: batchProcessor,
+		ratelimitStore: ratelimitStore,
+		sourcemapStore: sourcemapStore,
 	}
 
-	// Profiling is currently experimental, and intended for profiling the
-	// server itself, so we only add the route if self-profiling is enabled.
-	if beaterConfig.SelfInstrumentation.IsEnabled() {
-		if beaterConfig.SelfInstrumentation.Profiling.CPU.IsEnabled() ||
-			beaterConfig.SelfInstrumentation.Profiling.Heap.IsEnabled() {
-			routeMap = append(routeMap, route{ProfilePath, profileHandler})
-		}
+	type route struct {
+		path      string
+		handlerFn func() (request.Handler, error)
+	}
+	routeMap := []route{
+		{RootPath, builder.rootHandler},
+		{AssetSourcemapPath, builder.sourcemapHandler},
+		{AgentConfigPath, builder.backendAgentConfigHandler(fetcher)},
+		{AgentConfigRUMPath, builder.rumAgentConfigHandler(fetcher)},
+		{IntakeRUMPath, builder.rumIntakeHandler(stream.RUMV2Processor)},
+		{IntakeRUMV3Path, builder.rumIntakeHandler(stream.RUMV3Processor)},
+		{IntakePath, builder.backendIntakeHandler},
+		// The profile endpoint is in Beta
+		{ProfilePath, builder.profileHandler},
 	}
 
 	for _, route := range routeMap {
-		h, err := route.handlerFn(beaterConfig, auth, report)
+		h, err := route.handlerFn()
 		if err != nil {
 			return nil, err
 		}
 		logger.Infof("Path %s added to request handler", route.path)
 		mux.Handle(route.path, pool.HTTPHandler(h))
-
 	}
-	if beaterConfig.Expvar.IsEnabled() {
+	if beaterConfig.Expvar.Enabled {
 		path := beaterConfig.Expvar.URL
 		logger.Infof("Path %s added to request handler", path)
 		mux.Handle(path, http.HandlerFunc(debugVarsHandler))
 	}
+	if beaterConfig.Pprof.Enabled {
+		const path = "/debug/pprof"
+		logger.Infof("Path %s added to request handler", path)
+		mux.Handle(path+"/", http.HandlerFunc(pprof.Index))
+		mux.Handle(path+"/cmdline", http.HandlerFunc(pprof.Cmdline))
+		mux.Handle(path+"/profile", http.HandlerFunc(pprof.Profile))
+		mux.Handle(path+"/symbol", http.HandlerFunc(pprof.Symbol))
+		mux.Handle(path+"/trace", http.HandlerFunc(pprof.Trace))
+	}
 	return mux, nil
 }
 
-func profileHandler(cfg *config.Config, builder *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	h := profile.Handler(transform.Config{}, reporter)
-	authHandler := builder.ForPrivilege(authorization.PrivilegeEventWrite.Action)
-	return middleware.Wrap(h, backendMiddleware(cfg, authHandler, profile.MonitoringMap)...)
+type routeBuilder struct {
+	info           beat.Info
+	cfg            *config.Config
+	authenticator  *auth.Authenticator
+	reporter       publish.Reporter
+	batchProcessor model.BatchProcessor
+	ratelimitStore *ratelimit.Store
+	sourcemapStore *sourcemap.Store
 }
 
-func backendIntakeHandler(cfg *config.Config, builder *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	h := intake.Handler(stream.BackendProcessor(cfg), reporter)
-	authHandler := builder.ForPrivilege(authorization.PrivilegeEventWrite.Action)
-	return middleware.Wrap(h, backendMiddleware(cfg, authHandler, intake.MonitoringMap)...)
-}
-
-func rumIntakeHandler(cfg *config.Config, _ *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	tcfg, err := rumTransformConfig(cfg)
-	if err != nil {
-		return nil, err
+func (r *routeBuilder) profileHandler() (request.Handler, error) {
+	requestMetadataFunc := emptyRequestMetadata
+	if r.cfg.AugmentEnabled {
+		requestMetadataFunc = backendRequestMetadata
 	}
-	h := intake.Handler(stream.RUMProcessor(cfg, tcfg), reporter)
-	return middleware.Wrap(h, rumMiddleware(cfg, nil, intake.MonitoringMap)...)
+	h := profile.Handler(requestMetadataFunc, r.batchProcessor)
+	return middleware.Wrap(h, backendMiddleware(r.cfg, r.authenticator, r.ratelimitStore, profile.MonitoringMap)...)
 }
 
-func rumV3IntakeHandler(cfg *config.Config, _ *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	tcfg, err := rumTransformConfig(cfg)
-	if err != nil {
-		return nil, err
+func (r *routeBuilder) backendIntakeHandler() (request.Handler, error) {
+	requestMetadataFunc := emptyRequestMetadata
+	if r.cfg.AugmentEnabled {
+		requestMetadataFunc = backendRequestMetadata
 	}
-	h := intake.Handler(stream.RUMV3Processor(cfg, tcfg), reporter)
-	return middleware.Wrap(h, rumMiddleware(cfg, nil, intake.MonitoringMap)...)
+	h := intake.Handler(stream.BackendProcessor(r.cfg), requestMetadataFunc, r.batchProcessor)
+	return middleware.Wrap(h, backendMiddleware(r.cfg, r.authenticator, r.ratelimitStore, intake.MonitoringMap)...)
 }
 
-func sourcemapHandler(cfg *config.Config, builder *authorization.Builder, reporter publish.Reporter) (request.Handler, error) {
-	tcfg, err := rumTransformConfig(cfg)
-	if err != nil {
-		return nil, err
+func (r *routeBuilder) rumIntakeHandler(newProcessor func(*config.Config) *stream.Processor) func() (request.Handler, error) {
+	requestMetadataFunc := emptyRequestMetadata
+	if r.cfg.AugmentEnabled {
+		requestMetadataFunc = rumRequestMetadata
 	}
-	h := sourcemap.Handler(sourcemap.DecodeSourcemapFormData, psourcemap.Processor, *tcfg, reporter)
-	authHandler := builder.ForPrivilege(authorization.PrivilegeSourcemapWrite.Action)
-	return middleware.Wrap(h, sourcemapMiddleware(cfg, authHandler)...)
-}
-
-func backendAgentConfigHandler(cfg *config.Config, builder *authorization.Builder, _ publish.Reporter) (request.Handler, error) {
-	authHandler := builder.ForPrivilege(authorization.PrivilegeAgentConfigRead.Action)
-	return agentConfigHandler(cfg, authHandler, backendMiddleware)
-}
-
-func rumAgentConfigHandler(cfg *config.Config, _ *authorization.Builder, _ publish.Reporter) (request.Handler, error) {
-	return agentConfigHandler(cfg, nil, rumMiddleware)
-}
-
-type middlewareFunc func(*config.Config, *authorization.Handler, map[request.ResultID]*monitoring.Int) []middleware.Middleware
-
-func agentConfigHandler(cfg *config.Config, authHandler *authorization.Handler, middlewareFunc middlewareFunc) (request.Handler, error) {
-	var client kibana.Client
-	if cfg.Kibana.Enabled {
-		client = kibana.NewConnectingClient(&cfg.Kibana.ClientConfig)
+	return func() (request.Handler, error) {
+		var batchProcessors modelprocessor.Chained
+		// The order of these processors is important. Source mapping must happen before identifying library frames, or
+		// frames to exclude from error grouping; identifying library frames must happen before updating the error culprit.
+		if r.sourcemapStore != nil {
+			batchProcessors = append(batchProcessors, sourcemap.BatchProcessor{
+				Store:   r.sourcemapStore,
+				Timeout: r.cfg.RumConfig.SourceMapping.Timeout,
+			})
+		}
+		if r.cfg.RumConfig.LibraryPattern != "" {
+			re, err := regexp.Compile(r.cfg.RumConfig.LibraryPattern)
+			if err != nil {
+				return nil, errors.Wrap(err, "invalid library pattern regex")
+			}
+			batchProcessors = append(batchProcessors, modelprocessor.SetLibraryFrame{Pattern: re})
+		}
+		if r.cfg.RumConfig.ExcludeFromGrouping != "" {
+			re, err := regexp.Compile(r.cfg.RumConfig.ExcludeFromGrouping)
+			if err != nil {
+				return nil, errors.Wrap(err, "invalid exclude from grouping regex")
+			}
+			batchProcessors = append(batchProcessors, modelprocessor.SetExcludeFromGrouping{Pattern: re})
+		}
+		if r.sourcemapStore != nil {
+			batchProcessors = append(batchProcessors, modelprocessor.SetCulprit{})
+		}
+		batchProcessors = append(batchProcessors, r.batchProcessor) // r.batchProcessor always goes last
+		h := intake.Handler(newProcessor(r.cfg), requestMetadataFunc, batchProcessors)
+		return middleware.Wrap(h, rumMiddleware(r.cfg, r.authenticator, r.ratelimitStore, intake.MonitoringMap)...)
 	}
-	h := agent.Handler(client, cfg.AgentConfig)
-	msg := "Agent remote configuration is disabled. " +
-		"Configure the `apm-server.kibana` section in apm-server.yml to enable it. " +
-		"If you are using a RUM agent, you also need to configure the `apm-server.rum` section. " +
-		"If you are not using remote configuration, you can safely ignore this error."
-	ks := middleware.KillSwitchMiddleware(cfg.Kibana.Enabled, msg)
-	return middleware.Wrap(h, append(middlewareFunc(cfg, authHandler, agent.MonitoringMap), ks)...)
 }
 
-func rootHandler(cfg *config.Config, builder *authorization.Builder, _ publish.Reporter) (request.Handler, error) {
-	return middleware.Wrap(root.Handler(),
-		rootMiddleware(cfg, builder.ForAnyOfPrivileges(authorization.ActionAny))...)
+func (r *routeBuilder) sourcemapHandler() (request.Handler, error) {
+	h := apisourcemap.Handler(r.reporter, r.sourcemapStore)
+	return middleware.Wrap(h, sourcemapMiddleware(r.cfg, r.authenticator, r.ratelimitStore)...)
+}
+
+func (r *routeBuilder) rootHandler() (request.Handler, error) {
+	h := root.Handler(root.HandlerConfig{Version: r.info.Version})
+	return middleware.Wrap(h, rootMiddleware(r.cfg, r.authenticator)...)
+}
+
+func (r *routeBuilder) backendAgentConfigHandler(f agentcfg.Fetcher) func() (request.Handler, error) {
+	return func() (request.Handler, error) {
+		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, backendMiddleware, f)
+	}
+}
+
+func (r *routeBuilder) rumAgentConfigHandler(f agentcfg.Fetcher) func() (request.Handler, error) {
+	return func() (request.Handler, error) {
+		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, rumMiddleware, f)
+	}
+}
+
+type middlewareFunc func(*config.Config, *auth.Authenticator, *ratelimit.Store, map[request.ResultID]*monitoring.Int) []middleware.Middleware
+
+func agentConfigHandler(
+	cfg *config.Config,
+	authenticator *auth.Authenticator,
+	ratelimitStore *ratelimit.Store,
+	middlewareFunc middlewareFunc,
+	f agentcfg.Fetcher,
+) (request.Handler, error) {
+	mw := middlewareFunc(cfg, authenticator, ratelimitStore, agent.MonitoringMap)
+	h := agent.NewHandler(f, cfg.KibanaAgentConfig, cfg.DefaultServiceEnvironment, cfg.AgentAuth.Anonymous.AllowAgent)
+
+	if !cfg.Kibana.Enabled && cfg.AgentConfigs == nil {
+		msg := "Agent remote configuration is disabled. " +
+			"Configure the `apm-server.kibana` section in apm-server.yml to enable it. " +
+			"If you are using a RUM agent, you also need to configure the `apm-server.rum` section. " +
+			"If you are not using remote configuration, you can safely ignore this error."
+		mw = append(mw, middleware.KillSwitchMiddleware(cfg.Kibana.Enabled, msg))
+	}
+
+	return middleware.Wrap(h, mw...)
 }
 
 func apmMiddleware(m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
 	return []middleware.Middleware{
 		middleware.LogMiddleware(),
+		middleware.TimeoutMiddleware(),
 		middleware.RecoverPanicMiddleware(),
 		middleware.MonitoringMiddleware(m),
 		middleware.RequestTimeMiddleware(),
 	}
 }
 
-func backendMiddleware(cfg *config.Config, auth *authorization.Handler, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
+func backendMiddleware(cfg *config.Config, authenticator *auth.Authenticator, ratelimitStore *ratelimit.Store, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
 	backendMiddleware := append(apmMiddleware(m),
-		middleware.AuthorizationMiddleware(auth, true),
+		middleware.ResponseHeadersMiddleware(cfg.ResponseHeaders),
+		middleware.AuthMiddleware(authenticator, true),
+		middleware.AnonymousRateLimitMiddleware(ratelimitStore),
 	)
-	if cfg.AugmentEnabled {
-		backendMiddleware = append(backendMiddleware, middleware.SystemMetadataMiddleware())
-	}
 	return backendMiddleware
 }
 
-func rumMiddleware(cfg *config.Config, _ *authorization.Handler, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
+func rumMiddleware(cfg *config.Config, authenticator *auth.Authenticator, ratelimitStore *ratelimit.Store, m map[request.ResultID]*monitoring.Int) []middleware.Middleware {
 	msg := "RUM endpoint is disabled. " +
 		"Configure the `apm-server.rum` section in apm-server.yml to enable ingestion of RUM events. " +
 		"If you are not using the RUM agent, you can safely ignore this error."
 	rumMiddleware := append(apmMiddleware(m),
+		middleware.ResponseHeadersMiddleware(cfg.ResponseHeaders),
 		middleware.ResponseHeadersMiddleware(cfg.RumConfig.ResponseHeaders),
-		middleware.SetRumFlagMiddleware(),
-		middleware.SetIPRateLimitMiddleware(cfg.RumConfig.EventRate),
 		middleware.CORSMiddleware(cfg.RumConfig.AllowOrigins, cfg.RumConfig.AllowHeaders),
-		middleware.KillSwitchMiddleware(cfg.RumConfig.IsEnabled(), msg),
+		middleware.AuthMiddleware(authenticator, true),
+		middleware.AnonymousRateLimitMiddleware(ratelimitStore),
 	)
-	if cfg.AugmentEnabled {
-		rumMiddleware = append(rumMiddleware, middleware.UserMetadataMiddleware())
-	}
-	return rumMiddleware
+	return append(rumMiddleware, middleware.KillSwitchMiddleware(cfg.RumConfig.Enabled, msg))
 }
 
-func sourcemapMiddleware(cfg *config.Config, auth *authorization.Handler) []middleware.Middleware {
+func sourcemapMiddleware(cfg *config.Config, auth *auth.Authenticator, ratelimitStore *ratelimit.Store) []middleware.Middleware {
 	msg := "Sourcemap upload endpoint is disabled. " +
 		"Configure the `apm-server.rum` section in apm-server.yml to enable sourcemap uploads. " +
 		"If you are not using the RUM agent, you can safely ignore this error."
-	enabled := cfg.RumConfig.IsEnabled() && cfg.RumConfig.SourceMapping.IsEnabled()
-	return append(backendMiddleware(cfg, auth, sourcemap.MonitoringMap),
-		middleware.KillSwitchMiddleware(enabled, msg))
-}
-
-func rootMiddleware(_ *config.Config, auth *authorization.Handler) []middleware.Middleware {
-	return append(apmMiddleware(root.MonitoringMap),
-		middleware.AuthorizationMiddleware(auth, false))
-}
-
-func rumTransformConfig(beaterConfig *config.Config) (*transform.Config, error) {
-	store, err := beaterConfig.RumConfig.MemoizedSourcemapStore()
-	if err != nil {
-		return nil, err
+	if cfg.DataStreams.Enabled {
+		msg = "When APM Server is managed by Fleet, Sourcemaps must be uploaded directly to Elasticsearch."
 	}
-	return &transform.Config{
-		SourcemapStore:      store,
-		LibraryPattern:      regexp.MustCompile(beaterConfig.RumConfig.LibraryPattern),
-		ExcludeFromGrouping: regexp.MustCompile(beaterConfig.RumConfig.ExcludeFromGrouping),
-	}, nil
+	enabled := cfg.RumConfig.Enabled && cfg.RumConfig.SourceMapping.Enabled && !cfg.DataStreams.Enabled
+	backendMiddleware := backendMiddleware(cfg, auth, ratelimitStore, apisourcemap.MonitoringMap)
+	return append(backendMiddleware, middleware.KillSwitchMiddleware(enabled, msg))
+}
+
+func rootMiddleware(cfg *config.Config, authenticator *auth.Authenticator) []middleware.Middleware {
+	return append(apmMiddleware(root.MonitoringMap),
+		middleware.ResponseHeadersMiddleware(cfg.ResponseHeaders),
+		middleware.AuthMiddleware(authenticator, false),
+	)
+}
+
+func emptyRequestMetadata(c *request.Context) model.Metadata {
+	return model.Metadata{}
+}
+
+func backendRequestMetadata(c *request.Context) model.Metadata {
+	return model.Metadata{System: model.System{IP: c.SourceIP}}
+}
+
+func rumRequestMetadata(c *request.Context) model.Metadata {
+	return model.Metadata{
+		Client:    model.Client{IP: c.SourceIP},
+		UserAgent: model.UserAgent{Original: c.UserAgent},
+	}
 }

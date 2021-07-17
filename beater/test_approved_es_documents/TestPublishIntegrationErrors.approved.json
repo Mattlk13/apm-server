@@ -1,12 +1,6 @@
 {
     "events": [
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2017-05-09T15:04:05.999Z",
             "agent": {
                 "ephemeral_id": "abcdef123",
@@ -34,13 +28,16 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
             },
             "error": {
                 "culprit": "my.module.function_name",
@@ -173,7 +170,6 @@
                             "exclude_from_grouping": false,
                             "filename": "/webpack/file/name.py",
                             "function": "foo",
-                            "library_frame": false,
                             "line": {
                                 "column": 4,
                                 "context": "line3",
@@ -265,7 +261,7 @@
                             "Mozilla Chrome Edge"
                         ]
                     },
-                    "method": "post",
+                    "method": "POST",
                     "referrer": "http://localhost:8000/test/e2e/",
                     "socket": {
                         "encrypted": true,
@@ -302,8 +298,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "process": {
                 "args": [
@@ -355,6 +351,7 @@
                 "scheme": "https"
             },
             "user": {
+                "domain": "ldap://abc",
                 "id": "99",
                 "name": "foo"
             },
@@ -363,12 +360,6 @@
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2018-08-09T14:59:05.999Z",
             "agent": {
                 "ephemeral_id": "abcdef123",
@@ -393,13 +384,16 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
             },
             "error": {
                 "grouping_key": "dc8dd667f7036ec5f0bae87bf2188243",
@@ -438,8 +432,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "process": {
                 "args": [
@@ -478,18 +472,13 @@
                 "us": 1533826745999000
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2018-08-09T14:59:05.999Z",
             "agent": {
                 "ephemeral_id": "abcdef123",
@@ -514,13 +503,16 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
             },
             "error": {
                 "exception": [
@@ -555,8 +547,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "process": {
                 "args": [
@@ -595,18 +587,13 @@
                 "us": 1533826745999000
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2019-01-09T21:40:53.000Z",
             "agent": {
                 "ephemeral_id": "justanid",
@@ -631,13 +618,16 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
             },
             "error": {
                 "exception": [
@@ -672,8 +662,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "9632587410abcdef"
@@ -718,18 +708,13 @@
                 "id": "0123456789abcdeffedcba0123456789"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2018-08-09T15:04:05.999Z",
             "agent": {
                 "ephemeral_id": "abcdef123",
@@ -754,13 +739,16 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
             },
             "error": {
                 "grouping_key": "d6b3f958dfea98dc9ed2b57d5f0c48bb",
@@ -794,8 +782,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "9632587410abcdef"
@@ -845,6 +833,7 @@
                 "type": "request"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "bar@example.com",
                 "id": "123",
                 "name": "bar"

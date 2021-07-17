@@ -44,14 +44,18 @@ import (
 )
 
 func init() {
+	repo, err := mage.GetProjectRepoInfo()
+	if err != nil {
+		panic(err)
+	}
 	mage.SetBuildVariableSources(&mage.BuildVariableSources{
-		BeatVersion: mage.DefaultBeatBuildVariableSources.BeatVersion,
-		GoVersion:   ".go-version",
-		DocBranch:   "docs/version.asciidoc",
+		BeatVersion: filepath.Join(repo.RootDir, "cmd", "version.go"),
+		GoVersion:   filepath.Join(repo.RootDir, ".go-version"),
+		DocBranch:   filepath.Join(repo.RootDir, "docs/version.asciidoc"),
 	})
 
 	mage.BeatDescription = "Elastic APM Server"
-	mage.BeatURL = "https://www.elastic.co/products/apm"
+	mage.BeatURL = "https://www.elastic.co/apm"
 	mage.BeatIndexPrefix = "apm"
 	mage.XPackDir = "x-pack"
 	mage.BeatUser = "apm-server"
@@ -174,8 +178,24 @@ func Package() {
 	mg.SerialDeps(mage.Package, TestPackages)
 }
 
+func Version() error {
+	v, err := mage.BeatQualifiedVersion()
+	if err != nil {
+		return err
+	}
+	fmt.Print(v)
+	return nil
+}
+
 // TestPackages tests the generated packages (i.e. file modes, owners, groups).
 func TestPackages() error {
+	// Run the tests using beats/go.mod.
+	defer os.Setenv("GOFLAGS", os.Getenv("GOFLAGS"))
+	beatsdir, err := mage.ElasticBeatsDir()
+	if err != nil {
+		return err
+	}
+	os.Setenv("GOFLAGS", "-modfile="+filepath.Join(beatsdir, "go.mod"))
 	return mage.TestPackages()
 }
 
@@ -335,7 +355,7 @@ func GoTestIntegration(ctx context.Context) error {
 
 // PythonUnitTest executes the python system tests.
 func PythonUnitTest() error {
-	return mage.PythonNoseTest(mage.DefaultPythonTestUnitArgs())
+	return mage.PythonTest(mage.DefaultPythonTestUnitArgs())
 }
 
 // -----------------------------------------------------------------------------
@@ -453,7 +473,7 @@ func DumpVariables() error {
 func Check() error {
 	fmt.Println(">> check: Checking source code for common problems")
 
-	mg.Deps(mage.GoVet, mage.CheckNosetestsNotExecutable, mage.CheckYAMLNotExecutable)
+	mg.Deps(mage.GoVet, mage.CheckPythonTestNotExecutable, mage.CheckYAMLNotExecutable)
 
 	changes, err := mage.GitDiffIndex()
 	if err != nil {

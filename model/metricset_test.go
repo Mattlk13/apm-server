@@ -18,7 +18,6 @@
 package model
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -26,8 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/elastic/beats/v7/libbeat/common"
-
-	"github.com/elastic/apm-server/transform"
 )
 
 func TestTransform(t *testing.T) {
@@ -35,6 +32,7 @@ func TestTransform(t *testing.T) {
 	metadata := Metadata{
 		Service: Service{Name: "myservice"},
 	}
+	resource := "external-service"
 
 	const (
 		trType   = "request"
@@ -43,39 +41,81 @@ func TestTransform(t *testing.T) {
 
 		spType    = "db"
 		spSubtype = "sql"
+
+		eventOutcome = "success"
 	)
 
 	tests := []struct {
 		Metricset *Metricset
-		Output    []common.MapStr
+		Output    common.MapStr
 		Msg       string
 	}{
 		{
-			Metricset: nil,
-			Output:    nil,
-			Msg:       "Nil metric",
-		},
-		{
 			Metricset: &Metricset{Timestamp: timestamp, Metadata: metadata},
-			Output: []common.MapStr{
-				{
-					"processor": common.MapStr{"event": "metric", "name": "metric"},
-					"service": common.MapStr{
-						"name": "myservice",
-					},
+			Output: common.MapStr{
+				"processor": common.MapStr{"event": "metric", "name": "metric"},
+				"service": common.MapStr{
+					"name": "myservice",
 				},
 			},
 			Msg: "Payload with empty metric.",
 		},
 		{
+			Metricset: &Metricset{Timestamp: timestamp, Metadata: metadata, Name: "raj"},
+			Output: common.MapStr{
+				"processor":      common.MapStr{"event": "metric", "name": "metric"},
+				"metricset.name": "raj",
+				"service": common.MapStr{
+					"name": "myservice",
+				},
+			},
+			Msg: "Payload with metricset name.",
+		},
+		{
 			Metricset: &Metricset{
 				Metadata:  metadata,
+				Labels:    common.MapStr{"a_b": "a.b.value"},
 				Timestamp: timestamp,
-				Samples: []Sample{{
-					Name:   "transaction.duration.histogram",
-					Counts: []int64{1},
-					Values: []float64{42},
-				}},
+				Samples: map[string]MetricsetSample{
+					"a.counter":  {Value: 612},
+					"some.gauge": {Value: 9.16},
+				},
+			},
+			Output: common.MapStr{
+				"processor":  common.MapStr{"event": "metric", "name": "metric"},
+				"service":    common.MapStr{"name": "myservice"},
+				"labels":     common.MapStr{"a_b": "a.b.value"},
+				"a.counter":  612.0,
+				"some.gauge": 9.16,
+			},
+			Msg: "Payload with valid metric.",
+		},
+		{
+			Metricset: &Metricset{
+				Timestamp:   timestamp,
+				Metadata:    metadata,
+				Span:        MetricsetSpan{Type: spType, Subtype: spSubtype},
+				Transaction: MetricsetTransaction{Type: trType, Name: trName},
+				Samples: map[string]MetricsetSample{
+					"span.self_time.count": {Value: 123},
+				},
+			},
+			Output: common.MapStr{
+				"processor":   common.MapStr{"event": "metric", "name": "metric"},
+				"service":     common.MapStr{"name": "myservice"},
+				"transaction": common.MapStr{"type": trType, "name": trName},
+				"span": common.MapStr{
+					"type": spType, "subtype": spSubtype,
+				},
+				"span.self_time.count": 123.0,
+			},
+			Msg: "Payload with breakdown metrics.",
+		},
+		{
+			Metricset: &Metricset{
+				Timestamp: timestamp,
+				Metadata:  metadata,
+				Event:     MetricsetEventCategorization{Outcome: eventOutcome},
 				Transaction: MetricsetTransaction{
 					Type:   trType,
 					Name:   trName,
@@ -83,81 +123,114 @@ func TestTransform(t *testing.T) {
 					Root:   true,
 				},
 				TimeseriesInstanceID: "foo",
-			},
-			Output: []common.MapStr{
-				{
-					"processor":  common.MapStr{"event": "metric", "name": "metric"},
-					"service":    common.MapStr{"name": "myservice"},
-					"timeseries": common.MapStr{"instance": "foo"},
-					"transaction": common.MapStr{
-						"name":   trName,
-						"type":   trType,
-						"result": trResult,
-						"root":   true,
-						"duration": common.MapStr{
-							"histogram": common.MapStr{
-								"counts": []int64{1},
-								"values": []float64{42},
-							},
-						},
-					},
-				},
-			},
-			Msg: "Payload with extended transaction metadata.",
-		},
-		{
-			Metricset: &Metricset{
-				Metadata:  metadata,
-				Labels:    common.MapStr{"a.b": "a.b.value"},
-				Timestamp: timestamp,
-				Samples: []Sample{
-					{
-						Name:  "a.counter",
-						Value: 612,
-					},
-					{
-						Name:  "some.gauge",
-						Value: 9.16,
-					},
-					{
-						Name:   "histo.gram",
-						Value:  666, // Value is ignored when Counts/Values are specified
+				Samples: map[string]MetricsetSample{
+					"transaction.duration.histogram": {
+						Type:   "histogram",
+						Value:  666, // ignored for histogram type
 						Counts: []int64{1, 2, 3},
 						Values: []float64{4.5, 6.0, 9.0},
 					},
 				},
-				Span:        MetricsetSpan{Type: spType, Subtype: spSubtype},
-				Transaction: MetricsetTransaction{Type: trType, Name: trName},
+				DocCount: 6,
 			},
-			Output: []common.MapStr{
-				{
-					"processor":   common.MapStr{"event": "metric", "name": "metric"},
-					"service":     common.MapStr{"name": "myservice"},
-					"transaction": common.MapStr{"name": trName, "type": trType},
-					"span":        common.MapStr{"type": spType, "subtype": spSubtype},
-					"labels":      common.MapStr{"a.b": "a.b.value"},
-
-					"a":    common.MapStr{"counter": float64(612)},
-					"some": common.MapStr{"gauge": float64(9.16)},
-					"histo": common.MapStr{
-						"gram": common.MapStr{
-							"counts": []int64{1, 2, 3},
-							"values": []float64{4.5, 6.0, 9.0},
-						},
+			Output: common.MapStr{
+				"processor":  common.MapStr{"event": "metric", "name": "metric"},
+				"service":    common.MapStr{"name": "myservice"},
+				"event":      common.MapStr{"outcome": eventOutcome},
+				"timeseries": common.MapStr{"instance": "foo"},
+				"transaction": common.MapStr{
+					"type":   trType,
+					"name":   trName,
+					"result": trResult,
+					"root":   true,
+				},
+				"transaction.duration.histogram": common.MapStr{
+					"counts": []int64{1, 2, 3},
+					"values": []float64{4.5, 6.0, 9.0},
+				},
+				"_metric_descriptions": common.MapStr{
+					"transaction.duration.histogram": common.MapStr{
+						"type": "histogram",
+					},
+				},
+				"_doc_count": int64(6),
+			},
+			Msg: "Payload with transaction duration.",
+		},
+		{
+			Metricset: &Metricset{
+				Timestamp: timestamp,
+				Metadata:  metadata,
+				Span: MetricsetSpan{Type: spType, Subtype: spSubtype, DestinationService: DestinationService{
+					Resource: resource,
+				}},
+				Samples: map[string]MetricsetSample{
+					"destination.service.response_time.count":  {Value: 40},
+					"destination.service.response_time.sum.us": {Value: 500000},
+				},
+			},
+			Output: common.MapStr{
+				"processor": common.MapStr{"event": "metric", "name": "metric"},
+				"service":   common.MapStr{"name": "myservice"},
+				"span": common.MapStr{
+					"type": spType, "subtype": spSubtype,
+					"destination": common.MapStr{"service": common.MapStr{"resource": resource}},
+				},
+				"destination.service.response_time.count":  40.0,
+				"destination.service.response_time.sum.us": 500000.0,
+			},
+			Msg: "Payload with destination service.",
+		},
+		{
+			Metricset: &Metricset{
+				Timestamp: timestamp,
+				Metadata:  metadata,
+				Samples: map[string]MetricsetSample{
+					"latency_histogram": {
+						Type:   "histogram",
+						Unit:   "s",
+						Counts: []int64{1, 2, 3},
+						Values: []float64{1.1, 2.2, 3.3},
+					},
+					"just_type": {
+						Type:  "counter",
+						Value: 123,
+					},
+					"just_unit": {
+						Unit:  "percent",
+						Value: 0.99,
 					},
 				},
 			},
-			Msg: "Payload with valid metric.",
+			Output: common.MapStr{
+				"processor": common.MapStr{"event": "metric", "name": "metric"},
+				"service":   common.MapStr{"name": "myservice"},
+				"latency_histogram": common.MapStr{
+					"counts": []int64{1, 2, 3},
+					"values": []float64{1.1, 2.2, 3.3},
+				},
+				"just_type": 123.0,
+				"just_unit": 0.99,
+				"_metric_descriptions": common.MapStr{
+					"latency_histogram": common.MapStr{
+						"type": "histogram",
+						"unit": "s",
+					},
+					"just_type": common.MapStr{
+						"type": "counter",
+					},
+					"just_unit": common.MapStr{
+						"unit": "percent",
+					},
+				},
+			},
+			Msg: "Payload with metric type and unit.",
 		},
 	}
 
-	tctx := &transform.Context{}
 	for idx, test := range tests {
-		outputEvents := test.Metricset.Transform(context.Background(), tctx)
-
-		for j, outputEvent := range outputEvents {
-			assert.Equal(t, test.Output[j], outputEvent.Fields, fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
-			assert.Equal(t, timestamp, outputEvent.Timestamp, fmt.Sprintf("Bad timestamp at idx %v; %s", idx, test.Msg))
-		}
+		outputEvent := test.Metricset.toBeatEvent()
+		assert.Equal(t, test.Output, outputEvent.Fields, fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
+		assert.Equal(t, timestamp, outputEvent.Timestamp, fmt.Sprintf("Bad timestamp at idx %v; %s", idx, test.Msg))
 	}
 }

@@ -6,6 +6,47 @@ apm-server:
   # Defines the host and port the server is listening on. Use "unix:/path/to.sock" to listen on a unix domain socket.
   host: "{{ .listen_hostport }}"
 
+  # Agent authorization configuration. If no methods are defined, all requests will be allowed.
+  #auth:
+    # Agent authorization using Elasticsearch API Keys.
+    #api_key:
+      #enabled: false
+      #
+      # Restrict how many unique API keys are allowed per minute. Should be set to at least the amount of different
+      # API keys configured in your monitored services. Every unique API key triggers one request to Elasticsearch.
+      #limit: 100
+
+    # Define a shared secret token for authorizing agents using the "Bearer" authorization method.
+    #secret_token:
+
+    # Allow anonymous access only for specified agents and/or services. This is primarily intended to allow
+    # limited access for untrusted agents, such as Real User Monitoring.
+    #anonymous:
+      # By default anonymous auth is automatically enabled when either auth.api_key or
+      # auth.secret_token is enabled, and RUM is enabled. Otherwise, anonymous auth is
+      # disabled by default.
+      #
+      # When anonymous auth is enabled, only agents matching allow_agent and services
+      # matching allow_service are allowed. See below for details on default values for
+      # allow_agent.
+      #enabled:
+
+      # Allow anonymous access only for specified agents.
+      #allow_agent: [rum-js, js-base]
+
+      # Allow anonymous access only for specified service names. By default, all service names are allowed.
+      #allow_service: []
+
+      # Rate-limit anonymous access by IP and number of events.
+      #rate_limit:
+        # Rate limiting is defined per unique client IP address, for a limited number of IP addresses.
+        # Sites with many concurrent clients should consider increasing this limit. Defaults to 1000.
+        #ip_limit: 1000
+
+        # Defines the maximum amount of events allowed per IP per second. Defaults to 300. The overall
+        # maximum event throughput for anonymous access is (event_limit * ip_limit).
+        #event_limit: 300
+
   # Maximum permitted size in bytes of a request's header accepted by the server to be processed.
   #max_header_size: 1048576
 
@@ -27,9 +68,18 @@ apm-server:
   # Maximum number of new connections to accept simultaneously (0 means unlimited).
   #max_connections: 0
 
+  # Custom HTTP headers to add to all HTTP responses, e.g. for security policy compliance.
+  #response_headers:
+  #  X-My-Header: Contents of the header
+
   # If true (default), APM Server captures the IP of the instrumented service
   # or the IP and User Agent of the real user (RUM requests).
   #capture_personal_data: true
+
+  # If specified, APM Server will record this value in events which have no service environment
+  # defined, and add it to agent configuration queries to Kibana when none is specified in the
+  # request from the agent.
+  #default_service_environment:
 
   # Enable APM Server Golang expvar support (https://golang.org/pkg/expvar/).
   #expvar:
@@ -84,19 +134,6 @@ apm-server:
     # Configure curve types for ECDHE based cipher suites.
     #curve_types: []
 
-    # Following options only concern requiring and verifying client certificates provided by the agents.
-    # Providing a client certificate is currently only supported by the RUM agent through
-    # browser configured certificates and Jaeger agents connecting via gRPC.
-    #
-    # Configure a list of root certificate authorities for verifying client certificates.
-    #certificate_authorities: []
-    #
-    # Configure which type of client authentication is supported.
-    # Options are `none`, `optional`, and `required`.
-    # Default is `none`. If `certificate_authorities` are configured,
-    # the value for `client_authentication` is automatically changed to `required`.
-    #client_authentication: "none"
-
   # The APM Server endpoints can be secured by configuring a secret token or enabling the usage of API keys. Both
   # options can be enabled in parallel, allowing Elastic APM agents to chose whichever mechanism they support.
   # As soon as one of the options is enabled, requests without a valid token are denied by the server. An exception
@@ -106,12 +143,17 @@ apm-server:
   # Agents include the token in the following format: Authorization: Bearer <secret-token>.
   # It is recommended to use an authorization token in combination with SSL enabled,
   # and save the token in the apm-server keystore.
+  #
+  # WARNING: This configuration is deprecated and replaced with `apm-server.auth.secret_token`, and will be removed
+  # in the 8.0 release. If that config is defined, this one will be ignored.
   #secret_token:
 
   # Enable API key authorization by setting enabled to true. By default API key support is disabled.
   # Agents include a valid API key in the following format: Authorization: ApiKey <token>.
   # The key must be the base64 encoded representation of the API key's "id:key".
-  # This is an experimental feature, use with care.
+  #
+  # WARNING: This configuration is deprecated and replaced with `apm-server.auth.api_key`, and will be removed
+  # in the 8.0 release. If that config is defined, this one will be ignored.
   #api_key:
     #enabled: false
 
@@ -146,10 +188,22 @@ apm-server:
       #ssl.enabled: true
 
       # Optional SSL configuration options. SSL is off by default, change the `protocol` option if you want to enable `https`.
-      # Configure SSL verification mode. If `none` is configured, all server hosts
-      # and certificates will be accepted. In this mode, SSL based connections are
-      # susceptible to man-in-the-middle attacks. Use only for testing. Default is
-      # `full`.
+      #
+      # Control the verification of Elasticsearch certificates. Valid values are:
+      # * full, which verifies that the provided certificate is signed by a trusted
+      # authority (CA) and also verifies that the server's hostname (or IP address)
+      # matches the names identified within the certificate.
+      # * strict, which verifies that the provided certificate is signed by a trusted
+      # authority (CA) and also verifies that the server's hostname (or IP address)
+      # matches the names identified within the certificate. If the Subject Alternative
+      # Name is empty, it returns an error.
+      # * certificate, which verifies that the provided certificate is signed by a
+      # trusted authority (CA), but does not perform any hostname verification.
+      #  * none, which performs no verification of the server's certificate. This
+      # mode disables many of the security benefits of SSL/TLS and should only be used
+      # after very careful consideration. It is primarily intended as a temporary
+      # diagnostic mechanism when attempting to resolve TLS errors; its use in
+      # production environments is strongly discouraged.
       #ssl.verification_mode: full
 
       # List of supported/valid TLS versions. By default all TLS versions 1.0 up to
@@ -188,6 +242,10 @@ apm-server:
   #rum:
     #enabled: false
 
+    # Rate-limit RUM agents.
+    #
+    # WARNING: This configuration is deprecated and replaced with `apm-server.auth.anonymous.rate_limit`,
+    # and will be removed in the 8.0 release. If that config is defined, this one will be ignored.
     #event_rate:
 
       # Defines the maximum amount of events allowed to be sent to the APM Server RUM
@@ -201,19 +259,27 @@ apm-server:
 
     #-- General RUM settings
 
+    # A list of service names to allow, to limit service-specific indices and data streams
+    # created for unauthenticated RUM events.
+    # If the list is empty, any service name is allowed.
+    #
+    # WARNING: This configuration is deprecated and replaced with `apm-server.auth.anonymous.allow_service`,
+    # and will be removed in the 8.0 release. If that config is defined, this one will be ignored.
+    #allow_service_names: []
+
     # A list of permitted origins for real user monitoring.
     # User-agents will send an origin header that will be validated against this list.
     # An origin is made of a protocol scheme, host and port, without the url path.
     # Allowed origins in this setting can have * to match anything (eg.: http://*.example.com)
     # If an item in the list is a single '*', everything will be allowed.
-    #allow_origins : ['*']
+    #allow_origins: ['*']
 
     # A list of Access-Control-Allow-Headers to allow RUM requests, in addition to "Content-Type",
     # "Content-Encoding", and "Accept"
-    #allow_headers : []
+    #allow_headers: []
 
     # Custom HTTP headers to add to RUM responses, e.g. for security policy compliance.
-    #response_headers :
+    #response_headers:
     #  X-My-Header: Contents of the header
 
     # Regexp to be matched against a stacktrace frame's `file_name` and `abs_path` attributes.
@@ -232,9 +298,15 @@ apm-server:
       # Sourcemapping is enabled by default.
       #enabled: true
 
-      # Source maps are always fetched from Elasticsearch, by default using the output.elasticsearch configuration.
+      # Timeout for fetching source maps.
+      #timeout: 5s
+
+      # Source maps may be fetched from Elasticsearch by using the
+      # output.elasticsearch configuration.
       # A different instance must be configured when using any other output.
       # This setting only affects sourcemap reads - the output determines where sourcemaps are written.
+      # Note: Configuring elasticsearch is not supported if apm-server is being
+      # managed by Fleet.
       #elasticsearch:
         # Array of hosts to connect to.
         # Scheme and port can be left out and will be set to the default (`http` and `9200`).
@@ -287,10 +359,22 @@ apm-server:
     #ssl.enabled: true
 
     # Optional SSL configuration options. SSL is off by default, change the `protocol` option if you want to enable `https`.
-    # Configure SSL verification mode. If `none` is configured, all server hosts
-    # and certificates will be accepted. In this mode, SSL based connections are
-    # susceptible to man-in-the-middle attacks. Use only for testing. Default is
-    # `full`.
+    #
+    # Control the verification of Kibana certificates. Valid values are:
+    # * full, which verifies that the provided certificate is signed by a trusted
+    # authority (CA) and also verifies that the server's hostname (or IP address)
+    # matches the names identified within the certificate.
+    # * strict, which verifies that the provided certificate is signed by a trusted
+    # authority (CA) and also verifies that the server's hostname (or IP address)
+    # matches the names identified within the certificate. If the Subject Alternative
+    # Name is empty, it returns an error.
+    # * certificate, which verifies that the provided certificate is signed by a
+    # trusted authority (CA), but does not perform any hostname verification.
+    #  * none, which performs no verification of the server's certificate. This
+    # mode disables many of the security benefits of SSL/TLS and should only be used
+    # after very careful consideration. It is primarily intended as a temporary
+    # diagnostic mechanism when attempting to resolve TLS errors; its use in
+    # production environments is strongly discouraged.
     #ssl.verification_mode: full
 
     # List of supported/valid TLS versions. By default all TLS versions 1.0 up to
@@ -397,6 +481,12 @@ apm-server:
 
   # When enabling Jaeger integration, APM Server acts as Jaeger collector. It supports jaeger.thrift over HTTP
   # and gRPC. This is an experimental feature, use with care.
+  #
+  # WARNING: This configuration is deprecated, and will be removed in the 8.0 release.
+  #
+  # Jaeger gRPC is now served on the same port as Elastic APM agents, defined by the
+  # "apm-server.host" configuration; it is implicitly enabled, and an agent tag called
+  # "elastic-apm-auth" is required when auth is enabled.
   #jaeger:
     #grpc:
       # Set to true to enable the Jaeger gRPC collector service.
@@ -620,10 +710,22 @@ output.elasticsearch:
   #ssl.enabled: true
 
   # Optional SSL configuration options. SSL is off by default, change the `protocol` option if you want to enable `https`.
-  # Configure SSL verification mode. If `none` is configured, all server hosts
-  # and certificates will be accepted. In this mode, SSL based connections are
-  # susceptible to man-in-the-middle attacks. Use only for testing. Default is
-  # `full`.
+  #
+  # Control the verification of Elasticsearch certificates. Valid values are:
+  # * full, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate.
+  # * strict, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate. If the Subject Alternative
+  # Name is empty, it returns an error.
+  # * certificate, which verifies that the provided certificate is signed by a
+  # trusted authority (CA), but does not perform any hostname verification.
+  #  * none, which performs no verification of the server's certificate. This
+  # mode disables many of the security benefits of SSL/TLS and should only be used
+  # after very careful consideration. It is primarily intended as a temporary
+  # diagnostic mechanism when attempting to resolve TLS errors; its use in
+  # production environments is strongly discouraged.
   #ssl.verification_mode: full
 
   # List of supported/valid TLS versions. By default all TLS versions 1.0 up to
@@ -749,10 +851,22 @@ output.elasticsearch:
   #ssl.enabled: false
 
   # Optional SSL configuration options. SSL is off by default.
-  # Configure SSL verification mode. If `none` is configured, all server hosts
-  # and certificates will be accepted. In this mode, SSL based connections are
-  # susceptible to man-in-the-middle attacks. Use only for testing. Default is
-  # `full`.
+  #
+  # Control the verification of Logstash certificates. Valid values are:
+  # * full, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate.
+  # * strict, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate. If the Subject Alternative
+  # Name is empty, it returns an error.
+  # * certificate, which verifies that the provided certificate is signed by a
+  # trusted authority (CA), but does not perform any hostname verification.
+  #  * none, which performs no verification of the server's certificate. This
+  # mode disables many of the security benefits of SSL/TLS and should only be used
+  # after very careful consideration. It is primarily intended as a temporary
+  # diagnostic mechanism when attempting to resolve TLS errors; its use in
+  # production environments is strongly discouraged.
   #ssl.verification_mode: full
 
   # List of supported/valid TLS versions. By default all TLS versions 1.0 up to
@@ -896,10 +1010,22 @@ output.elasticsearch:
   #ssl.enabled: false
 
   # Optional SSL configuration options. SSL is off by default.
-  # Configure SSL verification mode. If `none` is configured, all server hosts
-  # and certificates will be accepted. In this mode, SSL based connections are
-  # susceptible to man-in-the-middle attacks. Use only for testing. Default is
-  # `full`.
+  #
+  # Control the verification of Kafka certificates. Valid values are:
+  # * full, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate.
+  # * strict, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate. If the Subject Alternative
+  # Name is empty, it returns an error.
+  # * certificate, which verifies that the provided certificate is signed by a
+  # trusted authority (CA), but does not perform any hostname verification.
+  #  * none, which performs no verification of the server's certificate. This
+  # mode disables many of the security benefits of SSL/TLS and should only be used
+  # after very careful consideration. It is primarily intended as a temporary
+  # diagnostic mechanism when attempting to resolve TLS errors; its use in
+  # production environments is strongly discouraged.
   #ssl.verification_mode: full
 
   # List of supported/valid TLS versions. By default all TLS versions 1.0 up to
@@ -982,10 +1108,10 @@ output.elasticsearch:
       #enabled: false
       #interval: 60s
       #duration: 10s
-  #heap:
-    # Set to true to enable heap profiling.
-    #enabled: false
-    #interval: 60s
+    #heap:
+      # Set to true to enable heap profiling.
+      #enabled: false
+      #interval: 60s
 
 #================================= Paths ==================================
 
@@ -1068,12 +1194,11 @@ output.elasticsearch:
   #interval: 0
 
 # Set to true to log messages in json format.
-#logging.json: false
+#logging.json: true
 
 # Set to true, to log messages with minimal required Elastic Common Schema (ECS)
-# information. Recommended to use in combination with `logging.json=true`
-# Defaults to false.
-#logging.ecs: false
+# information. Recommended to use in combination with `logging.json=true`.
+#logging.ecs: true
 
 #=============================== HTTP Endpoint ===============================
 
@@ -1163,10 +1288,22 @@ output.elasticsearch:
   #ssl.enabled: true
 
   # Optional SSL configuration options. SSL is off by default, change the `protocol` option if you want to enable `https`.
-  # Configure SSL verification mode. If `none` is configured, all server hosts
-  # and certificates will be accepted. In this mode, SSL based connections are
-  # susceptible to man-in-the-middle attacks. Use only for testing. Default is
-  # `full`.
+  #
+  # Control the verification of Elasticsearch certificates. Valid values are:
+  # * full, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate.
+  # * strict, which verifies that the provided certificate is signed by a trusted
+  # authority (CA) and also verifies that the server's hostname (or IP address)
+  # matches the names identified within the certificate. If the Subject Alternative
+  # Name is empty, it returns an error.
+  # * certificate, which verifies that the provided certificate is signed by a
+  # trusted authority (CA), but does not perform any hostname verification.
+  #  * none, which performs no verification of the server's certificate. This
+  # mode disables many of the security benefits of SSL/TLS and should only be used
+  # after very careful consideration. It is primarily intended as a temporary
+  # diagnostic mechanism when attempting to resolve TLS errors; its use in
+  # production environments is strongly discouraged.
   #ssl.verification_mode: full
 
   # List of supported/valid TLS versions. By default all TLS versions 1.0 up to

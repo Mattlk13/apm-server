@@ -66,6 +66,8 @@ const (
 	IDResponseErrorsValidate ResultID = "response.errors.validate"
 	// IDResponseErrorsRateLimit identifies responses for rate limited requests
 	IDResponseErrorsRateLimit ResultID = "response.errors.ratelimit"
+	// IDResponseErrorsTimeout identifies responses for timed out requests
+	IDResponseErrorsTimeout ResultID = "response.errors.timeout"
 	// IDResponseErrorsMethodNotAllowed identifies responses for requests using a forbidden method
 	IDResponseErrorsMethodNotAllowed ResultID = "response.errors.method"
 	// IDResponseErrorsFullQueue identifies responses when internal queue was full
@@ -94,11 +96,15 @@ var (
 		IDResponseErrorsValidate:           {Code: http.StatusBadRequest, Keyword: "data validation error"},
 		IDResponseErrorsMethodNotAllowed:   {Code: http.StatusMethodNotAllowed, Keyword: "method not supported"},
 		IDResponseErrorsRateLimit:          {Code: http.StatusTooManyRequests, Keyword: "too many requests"},
+		IDResponseErrorsTimeout:            {Code: http.StatusServiceUnavailable, Keyword: "request timed out"},
 		IDResponseErrorsFullQueue:          {Code: http.StatusServiceUnavailable, Keyword: "queue is full"},
 		IDResponseErrorsShuttingDown:       {Code: http.StatusServiceUnavailable, Keyword: "server is shutting down"},
 		IDResponseErrorsServiceUnavailable: {Code: http.StatusServiceUnavailable, Keyword: "service unavailable"},
 		IDResponseErrorsInternal:           {Code: http.StatusInternalServerError, Keyword: "internal error"},
 	}
+
+	// DefaultResultIDs is a list of the default result IDs used by the package.
+	DefaultResultIDs = []ResultID{IDRequestCount, IDResponseCount, IDResponseErrorsCount, IDResponseValidCount}
 )
 
 // ResultID unique string identifying a requests Result
@@ -122,7 +128,7 @@ type Result struct {
 
 // DefaultMonitoringMapForRegistry returns map matching resultIDs to monitoring counters for given registry.
 func DefaultMonitoringMapForRegistry(r *monitoring.Registry) map[ResultID]*monitoring.Int {
-	ids := []ResultID{IDUnset, IDRequestCount, IDResponseCount, IDResponseErrorsCount, IDResponseValidCount}
+	ids := append(DefaultResultIDs, IDUnset)
 	for id := range MapResultIDToStatus {
 		ids = append(ids, id)
 	}
@@ -170,16 +176,6 @@ func (r *Result) SetWithError(id ResultID, err error) {
 // SetWithBody derives information about the result from the given ID. The body is set to the passed value.
 func (r *Result) SetWithBody(id ResultID, body interface{}) {
 	r.set(id, body, nil)
-}
-
-// SetDeniedAuthorization sets the result when authorization is denied
-func (r *Result) SetDeniedAuthorization(err error) {
-	if err != nil {
-		id := IDResponseErrorsServiceUnavailable
-		status := MapResultIDToStatus[id]
-		r.Set(id, status.Code, status.Keyword, status.Keyword, err)
-	}
-	r.SetDefault(IDResponseErrorsUnauthorized)
 }
 
 // Set allows for the most flexibility in setting a result's properties.

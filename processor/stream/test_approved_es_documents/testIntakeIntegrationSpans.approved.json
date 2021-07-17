@@ -29,16 +29,21 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
+            "event": {
+                "outcome": "success"
+            },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "node-name",
                 "os": {
                     "platform": "darwin"
                 }
@@ -83,9 +88,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "container-id"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -112,6 +114,7 @@
                 "id": "01af25874dec69dd"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
@@ -141,16 +144,21 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
+            "event": {
+                "outcome": "unknown"
+            },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "node-name",
                 "os": {
                     "platform": "darwin"
                 }
@@ -195,9 +203,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "container-id"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -225,13 +230,14 @@
                 "id": "ab45781d265894fe"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@timestamp": "2018-08-01T10:00:00.001845Z",
+            "@timestamp": "2018-08-01T10:00:00.001Z",
             "agent": {
                 "name": "elastic-node",
                 "version": "3.14.0"
@@ -254,16 +260,21 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
+            "event": {
+                "outcome": "unknown"
+            },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "node-name",
                 "os": {
                     "platform": "darwin"
                 }
@@ -311,9 +322,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "container-id"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -342,13 +350,14 @@
                 "id": "ab23456a89012345"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@timestamp": "2018-08-01T10:00:00Z",
+            "@timestamp": "2018-08-01T10:00:00.000Z",
             "agent": {
                 "name": "elastic-node",
                 "version": "3.14.0"
@@ -371,16 +380,21 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
+            "event": {
+                "outcome": "unknown"
+            },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "node-name",
                 "os": {
                     "platform": "darwin"
                 }
@@ -425,9 +439,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "container-id"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -455,13 +466,14 @@
                 "id": "abcdef0123456789abcdef9876543210"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@timestamp": "2018-08-01T10:00:00.00283092Z",
+            "@timestamp": "2018-08-01T10:00:00.002Z",
             "agent": {
                 "ephemeral_id": "justanid",
                 "name": "elastic-ruby",
@@ -485,23 +497,33 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "destination": {
                 "address": "0:0::0:1",
-                "ip": "0:0::0:1",
                 "port": 5432
+            },
+            "event": {
+                "outcome": "success"
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "node-name",
                 "os": {
                     "platform": "darwin"
+                }
+            },
+            "http": {
+                "request.method": "GET",
+                "response": {
+                    "status_code": 200
                 }
             },
             "kubernetes": {
@@ -544,9 +566,6 @@
                     "version": "8"
                 },
                 "name": "service1",
-                "node": {
-                    "name": "container-id"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -576,7 +595,7 @@
                     "us": 3781
                 },
                 "http": {
-                    "method": "get",
+                    "method": "GET",
                     "response": {
                         "decoded_body_size": 401,
                         "encoded_body_size": 356,
@@ -651,7 +670,9 @@
             "trace": {
                 "id": "abcdef0123456789abcdef9876543210"
             },
+            "url.original": "http://localhost:8000",
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
@@ -681,20 +702,24 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "destination": {
-                "address": "0:0::0:1",
-                "ip": "0:0::0:1"
+                "address": "0:0::0:1"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
-                "hostname": "node-name",
+                "hostname": "prod1.example.com",
                 "ip": "192.0.0.1",
-                "name": "node-name",
                 "os": {
                     "platform": "darwin"
                 }
@@ -739,9 +764,6 @@
                     "version": "8"
                 },
                 "name": "backendspans",
-                "node": {
-                    "name": "container-id"
-                },
                 "runtime": {
                     "name": "node",
                     "version": "8.0.0"
@@ -776,6 +798,7 @@
                 "id": "01af25874dec69dd"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"

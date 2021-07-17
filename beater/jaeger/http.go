@@ -28,7 +28,7 @@ import (
 	"github.com/jaegertracing/jaeger/model"
 	converter "github.com/jaegertracing/jaeger/model/converter/thrift/jaeger"
 	"github.com/jaegertracing/jaeger/thrift-gen/jaeger"
-	"github.com/open-telemetry/opentelemetry-collector/consumer"
+	"go.opentelemetry.io/collector/consumer"
 
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
@@ -42,11 +42,12 @@ const (
 
 var (
 	httpRegistry      = monitoring.Default.NewRegistry("apm-server.jaeger.http")
+	monitoringKeys    = append(request.DefaultResultIDs, request.IDEventReceivedCount)
 	httpMonitoringMap = request.MonitoringMapForRegistry(httpRegistry, monitoringKeys)
 )
 
 // newHTTPMux returns a new http.ServeMux which accepts Thrift-encoded spans.
-func newHTTPMux(consumer consumer.TraceConsumer) (*http.ServeMux, error) {
+func newHTTPMux(consumer consumer.Traces) (*http.ServeMux, error) {
 	handler, err := middleware.Wrap(
 		newHTTPHandler(consumer),
 		middleware.LogMiddleware(),
@@ -65,10 +66,10 @@ func newHTTPMux(consumer consumer.TraceConsumer) (*http.ServeMux, error) {
 }
 
 type httpHandler struct {
-	consumer consumer.TraceConsumer
+	consumer consumer.Traces
 }
 
-func newHTTPHandler(consumer consumer.TraceConsumer) request.Handler {
+func newHTTPHandler(consumer consumer.Traces) request.Handler {
 	h := &httpHandler{consumer}
 	return h.handle
 }
@@ -109,8 +110,8 @@ func (h *httpHandler) handleTraces(c *request.Context) {
 
 	var batch jaeger.Batch
 	transport := thrift.NewStreamTransport(c.Request.Body, ioutil.Discard)
-	protocol := thrift.NewTBinaryProtocolFactoryDefault().GetProtocol(transport)
-	if err := batch.Read(protocol); err != nil {
+	protocol := thrift.NewTBinaryProtocolFactoryConf(nil).GetProtocol(transport)
+	if err := batch.Read(c.Request.Context(), protocol); err != nil {
 		c.Result.SetWithError(request.IDResponseErrorsDecode, err)
 		return
 	}

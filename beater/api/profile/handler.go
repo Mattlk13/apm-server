@@ -33,9 +33,8 @@ import (
 	"github.com/elastic/apm-server/decoder"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/model/modeldecoder"
+	v2 "github.com/elastic/apm-server/model/modeldecoder/v2"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
-	"github.com/elastic/apm-server/validation"
 )
 
 var (
@@ -56,11 +55,13 @@ const (
 	profileContentLengthLimit  = 10 * 1024 * 1024
 )
 
+// RequestMetadataFunc is a function type supplied to Handler for extracting
+// metadata from the request. This is used for conditionally injecting the
+// source IP address as `client.ip` for RUM.
+type RequestMetadataFunc func(*request.Context) model.Metadata
+
 // Handler returns a request.Handler for managing profile requests.
-func Handler(
-	transformConfig transform.Config,
-	report publish.Reporter,
-) request.Handler {
+func Handler(requestMetadataFunc RequestMetadataFunc, processor model.BatchProcessor) request.Handler {
 	handle := func(c *request.Context) (*result, error) {
 		if c.Request.Method != http.MethodPost {
 			return nil, requestError{
@@ -74,16 +75,6 @@ func Handler(
 				err: err,
 			}
 		}
-
-		ok := c.RateLimiter == nil || c.RateLimiter.Allow()
-		if !ok {
-			return nil, requestError{
-				id:  request.IDResponseErrorsRateLimit,
-				err: errors.New("rate limit exceeded"),
-			}
-		}
-
-		tctx := &transform.Context{Config: transformConfig}
 
 		var totalLimitRemaining int64 = profileContentLengthLimit
 		var profiles []*pprof_profile.Profile
@@ -109,26 +100,16 @@ func Handler(
 					}
 				}
 				r := &decoder.LimitedReader{R: part, N: metadataContentLengthLimit}
-				raw, err := decoder.DecodeJSONData(r)
-				if err != nil {
+				dec := decoder.NewJSONDecoder(r)
+				metadata := requestMetadataFunc(c)
+				if err := v2.DecodeMetadata(dec, &metadata); err != nil {
 					if r.N < 0 {
 						return nil, requestError{
 							id:  request.IDResponseErrorsRequestTooLarge,
 							err: err,
 						}
 					}
-					return nil, requestError{
-						id:  request.IDResponseErrorsDecode,
-						err: errors.Wrap(err, "failed to decode metadata JSON"),
-					}
-				}
-				metadata := model.Metadata{
-					UserAgent: model.UserAgent{Original: c.RequestMetadata.UserAgent},
-					Client:    model.Client{IP: c.RequestMetadata.ClientIP},
-					System:    model.System{IP: c.RequestMetadata.SystemIP}}
-				if err := modeldecoder.DecodeMetadata(raw, false, &metadata); err != nil {
-					var ve *validation.Error
-					if errors.As(err, &ve) {
+					if _, ok := err.(modeldecoder.ValidationError); ok {
 						return nil, requestError{
 							id:  request.IDResponseErrorsValidate,
 							err: errors.Wrap(err, "invalid metadata"),
@@ -136,7 +117,7 @@ func Handler(
 					}
 					return nil, requestError{
 						id:  request.IDResponseErrorsDecode,
-						err: errors.Wrap(err, "failed to decode metadata"),
+						err: errors.Wrap(err, "invalid metadata"),
 					}
 				}
 				profileMetadata = metadata
@@ -177,18 +158,11 @@ func Handler(
 			}
 		}
 
-		transformables := make([]transform.Transformable, len(profiles))
-		for i, p := range profiles {
-			transformables[i] = model.PprofProfile{
-				Metadata: profileMetadata,
-				Profile:  p,
-			}
+		var batch model.Batch
+		for _, profile := range profiles {
+			batch = appendProfileSampleBatch(profile, profileMetadata, batch)
 		}
-
-		if err := report(c.Request.Context(), publish.PendingReq{
-			Transformables: transformables,
-			Tcontext:       tctx,
-		}); err != nil {
+		if err := processor.ProcessBatch(c.Request.Context(), &batch); err != nil {
 			switch err {
 			case publish.ErrChannelClosed:
 				return nil, requestError{
@@ -203,7 +177,7 @@ func Handler(
 			}
 			return nil, err
 		}
-		return &result{Accepted: len(transformables)}, nil
+		return &result{Accepted: len(batch)}, nil
 	}
 	return func(c *request.Context) {
 		result, err := handle(c)

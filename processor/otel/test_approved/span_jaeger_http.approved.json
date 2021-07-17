@@ -1,30 +1,36 @@
 {
     "events": [
         {
-            "@timestamp": "2019-12-16T12:46:58.000768068Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
             },
             "destination": {
-                "address": "mysql://db:3306",
-                "port": 3306
+                "address": "foo.bar.com",
+                "port": 80
+            },
+            "event": {
+                "outcome": "failure"
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
+                "hostname": "host-abc"
+            },
+            "http": {
+                "request.method": "get",
+                "response": {
+                    "status_code": 400
+                }
             },
             "labels": {
                 "component": "foo",
                 "double_a": 14.65,
-                "error": true,
                 "hasErrors": true,
                 "int_a": 148,
-                "string_a_b": "some note",
-                "type": "db_request"
+                "string_a_b": "some note"
             },
             "parent": {
-                "id": "58585858"
+                "id": "0000000058585858"
             },
             "processor": {
                 "event": "span",
@@ -34,15 +40,14 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "span": {
                 "destination": {
                     "service": {
-                        "name": "sql"
+                        "name": "http://foo.bar.com",
+                        "resource": "foo.bar.com:80",
+                        "type": "external"
                     }
                 },
                 "duration": {
@@ -51,13 +56,13 @@
                 "http": {
                     "method": "get",
                     "response": {
-                        "status_code": 200
+                        "status_code": 400
                     },
                     "url": {
                         "original": "http://foo.bar.com?a=12"
                     }
                 },
-                "id": "41414646",
+                "id": "0000000041414646",
                 "name": "HTTP GET",
                 "subtype": "http",
                 "type": "external"
@@ -66,11 +71,12 @@
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            }
+                "id": "00000000000000000000000046467830"
+            },
+            "url.original": "http://foo.bar.com?a=12"
         },
         {
-            "@timestamp": "2019-12-16T12:46:58.000768091Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
@@ -81,25 +87,15 @@
                         "message": "no connection established"
                     }
                 ],
-                "grouping_key": "c9221918248f05433f6b81c46a666aee",
                 "log": {
                     "message": "retrying connection"
                 }
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
-            },
-            "http": {
-                "request": {
-                    "method": "get"
-                },
-                "response": {
-                    "status_code": 200
-                }
+                "hostname": "host-abc"
             },
             "parent": {
-                "id": "41414646"
+                "id": "0000000041414646"
             },
             "processor": {
                 "event": "error",
@@ -109,51 +105,31 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            },
-            "url": {
-                "domain": "foo.bar.com",
-                "full": "http://foo.bar.com?a=12",
-                "original": "http://foo.bar.com?a=12",
-                "query": "a=12",
-                "scheme": "http"
+                "id": "00000000000000000000000046467830"
             }
         },
         {
-            "@timestamp": "2019-12-16T12:46:58.000768111Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
             },
             "error": {
-                "grouping_key": "23b7ac1bdf1ca957f9f581cfadee467c",
                 "log": {
                     "message": "nullPointer exception"
                 }
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
-            },
-            "http": {
-                "request": {
-                    "method": "get"
-                },
-                "response": {
-                    "status_code": 200
-                }
+                "hostname": "host-abc"
             },
             "parent": {
-                "id": "41414646"
+                "id": "0000000041414646"
             },
             "processor": {
                 "event": "error",
@@ -163,27 +139,17 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            },
-            "url": {
-                "domain": "foo.bar.com",
-                "full": "http://foo.bar.com?a=12",
-                "original": "http://foo.bar.com?a=12",
-                "query": "a=12",
-                "scheme": "http"
+                "id": "00000000000000000000000046467830"
             }
         },
         {
-            "@timestamp": "2019-12-16T12:46:58.000768134Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
@@ -193,23 +159,13 @@
                     {
                         "message": "no connection established"
                     }
-                ],
-                "grouping_key": "c9221918248f05433f6b81c46a666aee"
+                ]
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
-            },
-            "http": {
-                "request": {
-                    "method": "get"
-                },
-                "response": {
-                    "status_code": 200
-                }
+                "hostname": "host-abc"
             },
             "parent": {
-                "id": "41414646"
+                "id": "0000000041414646"
             },
             "processor": {
                 "event": "error",
@@ -219,27 +175,17 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            },
-            "url": {
-                "domain": "foo.bar.com",
-                "full": "http://foo.bar.com?a=12",
-                "original": "http://foo.bar.com?a=12",
-                "query": "a=12",
-                "scheme": "http"
+                "id": "00000000000000000000000046467830"
             }
         },
         {
-            "@timestamp": "2019-12-16T12:46:58.000768134Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
@@ -249,23 +195,13 @@
                     {
                         "message": "no connection established"
                     }
-                ],
-                "grouping_key": "c9221918248f05433f6b81c46a666aee"
+                ]
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
-            },
-            "http": {
-                "request": {
-                    "method": "get"
-                },
-                "response": {
-                    "status_code": 200
-                }
+                "hostname": "host-abc"
             },
             "parent": {
-                "id": "41414646"
+                "id": "0000000041414646"
             },
             "processor": {
                 "event": "error",
@@ -275,27 +211,17 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            },
-            "url": {
-                "domain": "foo.bar.com",
-                "full": "http://foo.bar.com?a=12",
-                "original": "http://foo.bar.com?a=12",
-                "query": "a=12",
-                "scheme": "http"
+                "id": "00000000000000000000000046467830"
             }
         },
         {
-            "@timestamp": "2019-12-16T12:46:58.000768134Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
@@ -305,23 +231,13 @@
                     {
                         "type": "DBClosedException"
                     }
-                ],
-                "grouping_key": "b0cf243ae3f66aa9e6bbed022417d274"
+                ]
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
-            },
-            "http": {
-                "request": {
-                    "method": "get"
-                },
-                "response": {
-                    "status_code": 200
-                }
+                "hostname": "host-abc"
             },
             "parent": {
-                "id": "41414646"
+                "id": "0000000041414646"
             },
             "processor": {
                 "event": "error",
@@ -331,51 +247,31 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            },
-            "url": {
-                "domain": "foo.bar.com",
-                "full": "http://foo.bar.com?a=12",
-                "original": "http://foo.bar.com?a=12",
-                "query": "a=12",
-                "scheme": "http"
+                "id": "00000000000000000000000046467830"
             }
         },
         {
-            "@timestamp": "2019-12-16T12:46:58.000768134Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
             },
             "error": {
-                "grouping_key": "c9221918248f05433f6b81c46a666aee",
                 "log": {
                     "message": "no connection established"
                 }
             },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
-            },
-            "http": {
-                "request": {
-                    "method": "get"
-                },
-                "response": {
-                    "status_code": 200
-                }
+                "hostname": "host-abc"
             },
             "parent": {
-                "id": "41414646"
+                "id": "0000000041414646"
             },
             "processor": {
                 "event": "error",
@@ -385,23 +281,13 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "timestamp": {
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            },
-            "url": {
-                "domain": "foo.bar.com",
-                "full": "http://foo.bar.com?a=12",
-                "original": "http://foo.bar.com?a=12",
-                "query": "a=12",
-                "scheme": "http"
+                "id": "00000000000000000000000046467830"
             }
         }
     ]

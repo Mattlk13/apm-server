@@ -19,8 +19,6 @@ package model
 
 import (
 	"github.com/elastic/beats/v7/libbeat/common"
-
-	"github.com/elastic/apm-server/utility"
 )
 
 type Metadata struct {
@@ -34,28 +32,17 @@ type Metadata struct {
 	Labels    common.MapStr
 }
 
-func (m *Metadata) Set(out common.MapStr) common.MapStr {
-	fields := (*mapStr)(&out)
-	fields.maybeSetMapStr("service", m.Service.Fields(m.System.Container.ID, m.System.name()))
-	fields.maybeSetMapStr("agent", m.Service.AgentFields())
+func (m *Metadata) set(fields *mapStr, eventLabels common.MapStr) {
+	fields.maybeSetMapStr("service", m.Service.Fields())
+	fields.maybeSetMapStr("agent", m.Service.Agent.fields())
 	fields.maybeSetMapStr("host", m.System.fields())
 	fields.maybeSetMapStr("process", m.Process.fields())
-	fields.maybeSetMapStr("user", m.User.Fields())
+	fields.maybeSetMapStr("user", m.User.fields())
 	fields.maybeSetMapStr("client", m.Client.fields())
 	fields.maybeSetMapStr("user_agent", m.UserAgent.fields())
-	fields.maybeSetMapStr("container", m.System.containerFields())
-	fields.maybeSetMapStr("kubernetes", m.System.kubernetesFields())
+	fields.maybeSetMapStr("container", m.System.Container.fields())
+	fields.maybeSetMapStr("kubernetes", m.System.Kubernetes.fields())
 	fields.maybeSetMapStr("cloud", m.Cloud.fields())
-	if len(m.Labels) > 0 {
-		// These labels are merged with event-specific labels,
-		// hence we clone the map to avoid updating the shared
-		// metadata map.
-		//
-		// TODO(axw) we should only clone as needed or, better,
-		// avoid cloning altogether. For example, we could use
-		// DeepUpdateNoOverwrite in the other direction to copy
-		// the shared map into an event-specific labels map.
-		utility.Set(out, "labels", m.Labels)
-	}
-	return out
+	fields.maybeSetMapStr("network", m.System.Network.fields())
+	maybeSetLabels(fields, m.Labels, eventLabels)
 }

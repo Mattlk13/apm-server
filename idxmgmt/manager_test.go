@@ -67,7 +67,6 @@ func TestManager_VerifySetup(t *testing.T) {
 		"ILMEnabledButUnsupported": {
 			version:    "6.2.0",
 			ilmEnabled: "true", loadILM: libidxmgmt.LoadModeEnabled,
-			warn: msgErrIlmDisabledES,
 		},
 		"ILMAutoButUnsupported": {
 			version: "6.2.0",
@@ -97,7 +96,7 @@ func TestManager_VerifySetup(t *testing.T) {
 			esCfg: common.MapStr{
 				"output.elasticsearch.enabled": false,
 				"output.logstash.enabled":      true},
-			warn: "automatically disabled ILM",
+			warn: "Automatically disabled ILM",
 		},
 		"EverythingEnabled": {
 			templateEnabled: true, loadTemplate: libidxmgmt.LoadModeEnabled,
@@ -200,6 +199,7 @@ func TestManager_SetupTemplate(t *testing.T) {
 		}
 	}
 }
+
 func TestManager_SetupILM(t *testing.T) {
 	fields := []byte("apm-server fields")
 
@@ -207,6 +207,7 @@ func TestManager_SetupILM(t *testing.T) {
 		cfg      common.MapStr
 		loadMode libidxmgmt.LoadMode
 
+		err                                       string
 		templatesILMEnabled, templatesILMDisabled int
 		policiesLoaded, aliasesLoaded             int
 		version                                   string
@@ -253,7 +254,7 @@ func TestManager_SetupILM(t *testing.T) {
 				"apm-server.ilm.setup.policies":  []common.MapStr{policyRollover1Day},
 			},
 			loadMode:            libidxmgmt.LoadModeEnabled,
-			templatesILMEnabled: 5, policiesLoaded: 2, aliasesLoaded: 4,
+			templatesILMEnabled: 5, policiesLoaded: 2, aliasesLoaded: 5,
 		},
 		"LoadModeOverwrite": {
 			loadMode:            libidxmgmt.LoadModeOverwrite,
@@ -323,6 +324,7 @@ func TestManager_SetupILM(t *testing.T) {
 			loadMode:             libidxmgmt.LoadModeEnabled,
 			version:              "6.2.0",
 			templatesILMDisabled: 4,
+			err:                  "ILM not supported",
 		},
 		"Default ES Unsupported ILM setup disabled": {
 			cfg:      common.MapStr{"apm-server.ilm.setup.enabled": false},
@@ -333,6 +335,7 @@ func TestManager_SetupILM(t *testing.T) {
 			cfg:      common.MapStr{"apm-server.ilm.setup.enabled": false, "apm-server.ilm.enabled": true},
 			loadMode: libidxmgmt.LoadModeEnabled,
 			version:  "6.2.0",
+			err:      "ILM not supported",
 		},
 	}
 	var testCasesILMNotSupportedByIndexSettings = map[string]testCase{
@@ -415,11 +418,16 @@ func TestManager_SetupILM(t *testing.T) {
 				clientHandler := newMockClientHandler(version)
 				m := defaultSupporter(t, tc.cfg).Manager(clientHandler, libidxmgmt.BeatsAssets(fields))
 				indexManager := m.(*manager)
-				require.NoError(t, indexManager.Setup(libidxmgmt.LoadModeDisabled, tc.loadMode))
-				assert.Equal(t, tc.policiesLoaded, len(clientHandler.policies), "policies")
-				assert.Equal(t, tc.aliasesLoaded, len(clientHandler.aliases), "aliases")
-				require.Equal(t, tc.templatesILMEnabled, clientHandler.templatesILMEnabled, "ILM enabled templates")
-				require.Equal(t, tc.templatesILMDisabled, clientHandler.templates, "ILM disabled templates")
+				err := indexManager.Setup(libidxmgmt.LoadModeDisabled, tc.loadMode)
+				if tc.err != "" {
+					require.EqualError(t, err, tc.err)
+				} else {
+					require.NoError(t, err)
+					assert.Len(t, clientHandler.policies, tc.policiesLoaded)
+					assert.Len(t, clientHandler.aliases, tc.aliasesLoaded)
+					require.Equal(t, tc.templatesILMEnabled, clientHandler.templatesILMEnabled, "ILM enabled templates")
+					require.Equal(t, tc.templatesILMDisabled, clientHandler.templates, "ILM disabled templates")
+				}
 			})
 		}
 	}
@@ -495,6 +503,12 @@ func (h *mockClientHandler) HasAlias(name string) (bool, error) {
 
 func (h *mockClientHandler) CreateAlias(alias libilm.Alias) error {
 	h.aliases = append(h.aliases, alias.Name)
+	if alias.Name == existingILMAlias {
+		return reasonedError{
+			error:  errors.New("CreateAlias failed"),
+			reason: libilm.ErrAliasAlreadyExists,
+		}
+	}
 	return nil
 }
 
@@ -505,4 +519,13 @@ func (h *mockClientHandler) HasILMPolicy(name string) (bool, error) {
 func (h *mockClientHandler) CreateILMPolicy(policy libilm.Policy) error {
 	h.policies = append(h.policies, policy.Name)
 	return nil
+}
+
+type reasonedError struct {
+	error
+	reason error
+}
+
+func (e reasonedError) Reason() error {
+	return e.reason
 }

@@ -7,10 +7,11 @@
             "version": "2.21.2-dev"
         },
         "ecs": {
-            "version": "1.5.0"
+            "version": "1.10.0"
         },
         "event": {
-            "ingested": "2020-04-22T14:57:46.610358Z"
+            "ingested": "2020-08-11T09:59:01.990087Z",
+            "outcome": "unknown"
         },
         "host": {
             "hostname": "alloy",
@@ -46,7 +47,7 @@
             "us": 1578451731616515
         },
         "trace": {
-            "id": "5025e08c7fef6542"
+            "id": "00000000000000005025e08c7fef6542"
         },
         "transaction": {
             "duration": {
@@ -54,7 +55,6 @@
             },
             "id": "5025e08c7fef6542",
             "name": "test_span",
-            "result": "Success",
             "sampled": true,
             "type": "custom"
         }

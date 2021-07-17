@@ -3,6 +3,13 @@
 
 https://github.com/elastic/apm-server/compare/6.7\...6.8[View commits]
 
+* <<release-notes-6.8.17>>
+* <<release-notes-6.8.16>>
+* <<release-notes-6.8.15>>
+* <<release-notes-6.8.14>>
+* <<release-notes-6.8.13>>
+* <<release-notes-6.8.12>>
+* <<release-notes-6.8.11>>
 * <<release-notes-6.8.10>>
 * <<release-notes-6.8.9>>
 * <<release-notes-6.8.8>>
@@ -14,6 +21,62 @@ https://github.com/elastic/apm-server/compare/6.7\...6.8[View commits]
 * <<release-notes-6.8.2>>
 * <<release-notes-6.8.1>>
 * <<release-notes-6.8.0>>
+
+[float]
+[[release-notes-6.8.17]]
+=== APM Server version 6.8.17
+
+https://github.com/elastic/apm-server/compare/v6.8.16\...v6.8.17[View commits]
+
+No significant changes.
+
+[float]
+[[release-notes-6.8.16]]
+=== APM Server version 6.8.16
+
+https://github.com/elastic/apm-server/compare/v6.8.15\...v6.8.16[View commits]
+
+No significant changes.
+
+[float]
+[[release-notes-6.8.15]]
+=== APM Server version 6.8.15
+
+https://github.com/elastic/apm-server/compare/v6.8.14\...v6.8.15[View commits]
+
+No significant changes.
+
+[float]
+[[release-notes-6.8.14]]
+=== APM Server version 6.8.14
+
+https://github.com/elastic/apm-server/compare/v6.8.13\...v6.8.14[View commits]
+
+No significant changes.
+
+[float]
+[[release-notes-6.8.13]]
+=== APM Server version 6.8.13
+
+https://github.com/elastic/apm-server/compare/v6.8.12\...v6.8.13[View commits]
+
+No significant changes.
+
+[float]
+[[release-notes-6.8.12]]
+=== APM Server version 6.8.12
+
+https://github.com/elastic/apm-server/compare/v6.8.11\...v6.8.12[View commits]
+
+No significant changes.
+
+[float]
+[[release-notes-6.8.11]]
+=== APM Server version 6.8.11
+
+https://github.com/elastic/apm-server/compare/v6.8.10\...v6.8.11[View commits]
+
+No significant changes.
 
 [float]
 [[release-notes-6.8.10]]

@@ -132,37 +132,12 @@ class APIKeyCommandTest(APIKeyCommandBaseTest):
         invalidated = self.invalidate_by_name(self.apikey_name)
         assert invalidated.get("error_count") == 0
 
-    def test_create(self):
-        apikey = self.create()
-
-        assert apikey.get("name") == self.apikey_name, apikey
-
-        for attr in ["id", "api_key", "credentials"]:
-            assert apikey.get(attr) != "", apikey
-
     def test_create_with_settings_override(self):
         apikey = self.create(
             "-E", "output.elasticsearch.enabled=false",
             "-E", "apm-server.api_key.elasticsearch.hosts=[{}]".format(self.es_url)
         )
         assert apikey.get("credentials") is not None, apikey
-
-    def test_create_with_expiration(self):
-        apikey = self.create("--expiration", "1d")
-        assert apikey.get("expiration") is not None, apikey
-
-    def test_invalidate_by_id(self):
-        apikey = self.create()
-        invalidated = self.invalidate_by_id(apikey["id"])
-        assert invalidated.get("invalidated_api_keys") == [apikey["id"]], invalidated
-        assert invalidated.get("error_count") == 0, invalidated
-
-    def test_invalidate_by_name(self):
-        self.create()
-        self.create()
-        invalidated = self.invalidate_by_name(self.apikey_name)
-        assert len(invalidated.get("invalidated_api_keys")) == 2, invalidated
-        assert invalidated.get("error_count") == 0, invalidated
 
     def test_info_by_id(self):
         self.create()
@@ -211,38 +186,3 @@ class APIKeyCommandTest(APIKeyCommandBaseTest):
         apikey = self.create("--agent-config")
         result = self.subcommand_output("verify", "--credentials={}".format(apikey["credentials"]))
         assert result == {'event:write': False, 'config_agent:read': True, 'sourcemap:write': False}, result
-
-
-@integration_test
-class APIKeyCommandBadUserTest(APIKeyCommandBaseTest):
-
-    def config(self):
-        return {
-            "elasticsearch_host": self.get_elasticsearch_url(user="heartbeat_user", password="changeme"),
-            "file_enabled": "false",
-            "kibana_enabled": "false",
-        }
-
-    def test_create_bad_user(self):
-        """heartbeat_user doesn't have required cluster privileges, so it can't create keys"""
-        result = self.subcommand_output("create", "--name", self.apikey_name, exit_code=1)
-        assert result.get("error") is not None
-
-
-@integration_test
-class APIKeyCommandBadUser2Test(APIKeyCommandBaseTest):
-
-    def config(self):
-        return {
-            "elasticsearch_host": self.get_elasticsearch_url(user="beats_user", password="changeme"),
-            "file_enabled": "false",
-            "kibana_enabled": "false",
-        }
-
-    def test_create_bad_user(self):
-        """beats_user does have required cluster privileges, but not APM application privileges,
-        so it can't create keys
-        """
-        result = self.subcommand_output("create", "--name", self.apikey_name, exit_code=1)
-        assert result.get("error") is not None, result
-        assert "beats_user is missing the following requested privilege(s):" in result.get("error"), result

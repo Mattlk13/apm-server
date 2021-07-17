@@ -18,30 +18,54 @@
 package cmd
 
 import (
+	"os"
 	"testing"
+
+	"github.com/elastic/beats/v7/libbeat/common"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/elastic/beats/v7/libbeat/cfgfile"
 )
 
-func TestOverrideLegacyInstrumentationConfig(t *testing.T) {
-	cfg, err := cfgfile.Load("testdata/legacy_instrumentation.yml", libbeatConfigOverrides)
-	require.NoError(t, err)
-	assert.True(t, cfg.HasField("instrumentation"))
+func TestCloudEnv(t *testing.T) {
+	defer os.Unsetenv(cloudEnv)
 
-	child, err := cfg.Child("instrumentation", -1)
-	require.NoError(t, err)
-	assert.True(t, child.Enabled())
+	// no cloud environment variable set
+	settings := DefaultSettings()
+	assert.Len(t, settings.ConfigOverrides, 2)
+	assert.Equal(t, common.NewConfig(), settings.ConfigOverrides[1].Config)
+
+	// cloud environment picked up
+	var cloudMatrix = map[string]struct {
+		worker      int
+		bulkMaxSize int
+		events      int
+		minEvents   int
+	}{
+		"512":   {5, 267, 2000, 267},
+		"1024":  {7, 381, 4000, 381},
+		"2048":  {10, 533, 8000, 533},
+		"4096":  {14, 762, 16000, 762},
+		"8192":  {20, 1067, 32000, 1067},
+		"16384": {20, 2133, 64000, 2133},
+		"32768": {20, 4267, 128000, 4267},
+	}
+	for capacity, throughputSettings := range cloudMatrix {
+		os.Setenv(cloudEnv, capacity)
+		settings = DefaultSettings()
+		assert.Len(t, settings.ConfigOverrides, 2)
+		cfg := settings.ConfigOverrides[1].Config
+		assert.NotNil(t, cfg)
+		assertEqual(t, cfg, "output.elasticsearch.worker", float64(throughputSettings.worker))
+		assertEqual(t, cfg, "output.elasticsearch.bulk_max_size", float64(throughputSettings.bulkMaxSize))
+		assertEqual(t, cfg, "queue.mem.events", float64(throughputSettings.events))
+		assertEqual(t, cfg, "queue.mem.flush.min_events", float64(throughputSettings.minEvents))
+		assertEqual(t, cfg, "output.elasticsearch.compression_level", 5)
+	}
 }
 
-func TestConflictInstrumentationConfig(t *testing.T) {
-	cfg, err := cfgfile.Load("testdata/conflict_instrumentation.yml", libbeatConfigOverrides)
+func assertEqual(t *testing.T, cfg *common.Config, key string, expected float64) {
+	val, err := cfg.Float(key, -1)
 	require.NoError(t, err)
-	assert.True(t, cfg.HasField("instrumentation"))
-
-	child, err := cfg.Child("instrumentation", -1)
-	require.NoError(t, err)
-	assert.False(t, child.Enabled())
+	assert.Equal(t, expected, val)
 }

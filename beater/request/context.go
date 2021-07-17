@@ -23,13 +23,12 @@ import (
 	"net/http"
 	"strings"
 
-	"golang.org/x/time/rate"
-
 	"github.com/elastic/beats/v7/libbeat/logp"
 
-	"github.com/elastic/apm-server/beater/authorization"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/headers"
 	logs "github.com/elastic/apm-server/log"
+	"github.com/elastic/apm-server/utility"
 )
 
 const (
@@ -43,24 +42,15 @@ var (
 
 // Context abstracts request and response information for http requests
 type Context struct {
-	Request         *http.Request
-	Logger          *logp.Logger
-	RateLimiter     *rate.Limiter
-	Authorization   authorization.Authorization
-	IsRum           bool
-	Result          Result
-	RequestMetadata Metadata
+	Request        *http.Request
+	Logger         *logp.Logger
+	Authentication auth.AuthenticationDetails
+	Result         Result
+	SourceIP       net.IP
+	UserAgent      string
 
 	w             http.ResponseWriter
 	writeAttempts int
-}
-
-// Metadata contains metadata extracted from the request by middleware,
-// and should be merged into the event metadata.
-type Metadata struct {
-	ClientIP  net.IP
-	SystemIP  net.IP
-	UserAgent string
 }
 
 // NewContext creates an empty Context struct
@@ -68,25 +58,27 @@ func NewContext() *Context {
 	return &Context{}
 }
 
-// Reset allows to reuse a context by removing all request specific information
+// Reset allows to reuse a context by removing all request specific information.
+//
+// It is valid to call Reset(nil, nil), which will just clear all information.
+// If w and r are non-nil, the context will be associated with them for handling
+// the request, and information such as the user agent and source IP will be
+// extracted for handlers.
 func (c *Context) Reset(w http.ResponseWriter, r *http.Request) {
-	c.Request = r
+	if c.Request != nil && c.Request.MultipartForm != nil {
+		c.Request.MultipartForm.RemoveAll()
+	}
 	c.Logger = nil
-	c.RateLimiter = nil
-	c.Authorization = &authorization.AllowAuth{}
-	c.IsRum = false
+	c.Authentication = auth.AuthenticationDetails{}
 	c.Result.Reset()
-	c.RequestMetadata.Reset()
+	c.writeAttempts = 0
 
 	c.w = w
-	c.writeAttempts = 0
-}
-
-// Reset sets all attribtues of the Metadata instance to it's zero value
-func (m *Metadata) Reset() {
-	m.ClientIP = nil
-	m.SystemIP = nil
-	m.UserAgent = ""
+	c.Request = r
+	if r != nil {
+		c.SourceIP = utility.ExtractIP(r)
+		c.UserAgent = utility.UserAgentHeader(r.Header)
+	}
 }
 
 // Header returns the http.Header of the context's writer

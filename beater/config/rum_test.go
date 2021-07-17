@@ -18,72 +18,34 @@
 package config
 
 import (
-	"fmt"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/elastic/apm-server/elasticsearch"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/logp"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func TestIsRumEnabled(t *testing.T) {
-	truthy := true
-	for _, td := range []struct {
-		c       *Config
-		enabled bool
-	}{
-		{c: &Config{RumConfig: &RumConfig{Enabled: new(bool)}}, enabled: false},
-		{c: &Config{RumConfig: &RumConfig{Enabled: &truthy}}, enabled: true},
-	} {
-		assert.Equal(t, td.enabled, td.c.RumConfig.IsEnabled())
+func TestRumSetup(t *testing.T) {
+	rum := defaultRum()
+	rum.SourceMapping.esConfigured = true
+	rum.Enabled = true
+	rum.SourceMapping.ESConfig = &elasticsearch.Config{APIKey: "id:apikey"}
+	esCfg := common.MustNewConfigFrom(map[string]interface{}{
+		"hosts": []interface{}{"cloud:9200"},
+	})
 
-	}
+	err := rum.setup(logp.NewLogger("test"), true, esCfg)
+
+	require.NoError(t, err)
+	assert.Equal(t, elasticsearch.Hosts{"cloud:9200"}, rum.SourceMapping.ESConfig.Hosts)
+	assert.Equal(t, "id:apikey", rum.SourceMapping.ESConfig.APIKey)
 }
 
 func TestDefaultRum(t *testing.T) {
-	c := DefaultConfig("7.0.0")
-	assert.Equal(t, defaultRum("7.0.0"), c.RumConfig)
-}
-
-func TestMemoizedSourcemapMapper(t *testing.T) {
-	truthy := true
-	esConfig := elasticsearch.Config{Hosts: []string{"localhost:0"}}
-	mapping := SourceMapping{
-		Cache:        &Cache{Expiration: 1 * time.Minute},
-		IndexPattern: "apm-rum-test*",
-		ESConfig:     &esConfig,
-	}
-
-	for idx, td := range []struct {
-		c      *Config
-		mapper bool
-		e      error
-	}{
-		{c: &Config{RumConfig: &RumConfig{}}, mapper: false, e: nil},
-		{c: &Config{RumConfig: &RumConfig{Enabled: new(bool)}}, mapper: false, e: nil},
-		{c: &Config{RumConfig: &RumConfig{Enabled: &truthy}}, mapper: false, e: nil},
-		{c: &Config{RumConfig: &RumConfig{SourceMapping: &mapping}}, mapper: false, e: nil},
-		{c: &Config{
-			RumConfig: &RumConfig{
-				Enabled: &truthy,
-				SourceMapping: &SourceMapping{
-					Cache:        &Cache{Expiration: 1 * time.Minute},
-					IndexPattern: "apm-rum-test*",
-				},
-			}},
-			mapper: false,
-			e:      nil},
-		{c: &Config{RumConfig: &RumConfig{Enabled: &truthy, SourceMapping: &mapping}},
-			mapper: true,
-			e:      nil},
-	} {
-		mapper, e := td.c.RumConfig.MemoizedSourcemapStore()
-		if td.mapper {
-			assert.NotNil(t, mapper, fmt.Sprintf("Test number <%v> failed", idx))
-		} else {
-			assert.Nil(t, mapper, fmt.Sprintf("Test number <%v> failed", idx))
-		}
-		assert.Equal(t, td.e, e)
-	}
+	c := DefaultConfig()
+	assert.Equal(t, defaultRum(), c.RumConfig)
 }

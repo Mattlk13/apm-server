@@ -21,7 +21,6 @@ import (
 	"context"
 
 	"github.com/elastic/apm-server/model"
-	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 )
 
@@ -30,30 +29,28 @@ var (
 	transactionsDroppedCounter = monitoring.NewInt(monitoringRegistry, "transactions_dropped")
 )
 
-// NewDiscardUnsampledReporter returns a publish.Reporter which discards
-// unsampled transactions before deferring to reporter.
+// NewDiscardUnsampledBatchProcessor returns a model.BatchProcessor which
+// discards unsampled transactions.
 //
-// The returned publish.Reporter does not guarantee order preservation of
-// reported events.
-func NewDiscardUnsampledReporter(reporter publish.Reporter) publish.Reporter {
-	return func(ctx context.Context, req publish.PendingReq) error {
-		var dropped int64
-		events := req.Transformables
+// The returned model.BatchProcessor does not guarantee order preservation
+// of events retained in the batch.
+func NewDiscardUnsampledBatchProcessor() model.BatchProcessor {
+	return model.ProcessBatchFunc(func(ctx context.Context, batch *model.Batch) error {
+		events := *batch
 		for i := 0; i < len(events); {
-			tx, ok := events[i].(*model.Transaction)
-			if !ok || tx.Sampled == nil || *tx.Sampled {
+			event := events[i]
+			if event.Transaction == nil || event.Transaction.Sampled == nil || *event.Transaction.Sampled {
 				i++
 				continue
 			}
-			n := len(req.Transformables)
+			n := len(events)
 			events[i], events[n-1] = events[n-1], events[i]
 			events = events[:n-1]
-			dropped++
 		}
-		if dropped > 0 {
-			transactionsDroppedCounter.Add(dropped)
+		if dropped := len(*batch) - len(events); dropped > 0 {
+			transactionsDroppedCounter.Add(int64(dropped))
 		}
-		req.Transformables = events
-		return reporter(ctx, req)
-	}
+		*batch = events
+		return nil
+	})
 }

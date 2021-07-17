@@ -27,23 +27,48 @@ import (
 	"go.elastic.co/apm/module/apmhttp"
 	"golang.org/x/net/netutil"
 
-	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
-	"github.com/elastic/beats/v7/libbeat/logp"
-
+	"github.com/elastic/apm-server/agentcfg"
 	"github.com/elastic/apm-server/beater/api"
 	"github.com/elastic/apm-server/beater/config"
+	"github.com/elastic/apm-server/beater/ratelimit"
+	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-server/model/modelprocessor"
 	"github.com/elastic/apm-server/publish"
+	"github.com/elastic/apm-server/sourcemap"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
+	"github.com/elastic/beats/v7/libbeat/logp"
+	"github.com/elastic/gmux"
 )
 
 type httpServer struct {
 	*http.Server
-	cfg      *config.Config
-	logger   *logp.Logger
-	reporter publish.Reporter
+	cfg          *config.Config
+	logger       *logp.Logger
+	reporter     publish.Reporter
+	grpcListener net.Listener
 }
 
-func newHTTPServer(logger *logp.Logger, cfg *config.Config, tracer *apm.Tracer, reporter publish.Reporter) (*httpServer, error) {
-	mux, err := api.NewMux(cfg, reporter)
+func newHTTPServer(
+	logger *logp.Logger,
+	info beat.Info,
+	cfg *config.Config,
+	tracer *apm.Tracer,
+	reporter publish.Reporter,
+	batchProcessor model.BatchProcessor,
+	agentcfgFetcher agentcfg.Fetcher,
+	ratelimitStore *ratelimit.Store,
+	sourcemapStore *sourcemap.Store,
+) (*httpServer, error) {
+
+	// Add a model processor that rate limits, and checks authorization for the agent and service for each event.
+	batchProcessor = modelprocessor.Chained{
+		model.ProcessBatchFunc(rateLimitBatchProcessor),
+		modelprocessor.MetadataProcessorFunc(authorizeEventIngest),
+		batchProcessor,
+	}
+
+	mux, err := api.NewMux(info, cfg, reporter, batchProcessor, agentcfgFetcher, ratelimitStore, sourcemapStore)
 	if err != nil {
 		return nil, err
 	}
@@ -65,9 +90,19 @@ func newHTTPServer(logger *logp.Logger, cfg *config.Config, tracer *apm.Tracer, 
 		if err != nil {
 			return nil, err
 		}
-		server.TLSConfig = tlsServerConfig.BuildModuleConfig("")
+		server.TLSConfig = tlsServerConfig.BuildServerConfig("")
 	}
-	return &httpServer{server, cfg, logger, reporter}, nil
+
+	// Configure the server with gmux. The returned net.Listener will receive
+	// gRPC connections, while all other requests will be handled by s.Handler.
+	//
+	// grpcListener is closed when the HTTP server is shutdown.
+	grpcListener, err := gmux.ConfigureServer(server, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &httpServer{server, cfg, logger, reporter, grpcListener}, nil
 }
 
 func (h *httpServer) start() error {
@@ -82,8 +117,7 @@ func (h *httpServer) start() error {
 		h.logger.Infof("Listening on: %s:%s", addr.Network(), addr.String())
 	}
 
-	switch h.cfg.RumConfig.IsEnabled() {
-	case true:
+	if h.cfg.RumConfig.Enabled {
 		h.logger.Info("RUM endpoints enabled!")
 		for _, s := range h.cfg.RumConfig.AllowOrigins {
 			if s == "*" {
@@ -91,7 +125,7 @@ func (h *httpServer) start() error {
 				break
 			}
 		}
-	case false:
+	} else {
 		h.logger.Info("RUM endpoints disabled.")
 	}
 
@@ -100,14 +134,19 @@ func (h *httpServer) start() error {
 		h.logger.Infof("Connection limit set to: %d", h.cfg.MaxConnections)
 	}
 
-	// Create the "onboarding" document, which contains the server's listening address.
-	notifyListening(context.Background(), addr, h.reporter)
+	if !h.cfg.DataStreams.Enabled {
+		// Create the "onboarding" document, which contains the server's
+		// listening address. We only do this if data streams are not enabled,
+		// as onboarding documents are incompatible with data streams.
+		// Onboarding documents should be replaced by Fleet status later.
+		notifyListening(context.Background(), addr, h.reporter)
+	}
 
-	if h.TLSConfig != nil {
+	if h.cfg.TLS.IsEnabled() {
 		h.logger.Info("SSL enabled.")
 		return h.ServeTLS(lis, "", "")
 	}
-	if h.cfg.SecretToken != "" {
+	if h.cfg.AgentAuth.SecretToken != "" {
 		h.logger.Warn("Secret token is set, but SSL is not enabled.")
 	}
 	h.logger.Info("SSL disabled.")

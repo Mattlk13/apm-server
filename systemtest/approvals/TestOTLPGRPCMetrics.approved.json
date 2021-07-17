@@ -1,0 +1,51 @@
+{
+    "events": [
+        {
+            "@timestamp": "dynamic",
+            "agent": {
+                "name": "opentelemetry/go",
+                "version": "0.19.0"
+            },
+            "ecs": {
+                "version": "dynamic"
+            },
+            "event": {
+                "ingested": "dynamic"
+            },
+            "float64_counter": 1,
+            "int64_recorder": {
+                "counts": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "values": [
+                    50.5,
+                    550,
+                    5500,
+                    10000
+                ]
+            },
+            "metricset.name": "app",
+            "observer": {
+                "ephemeral_id": "dynamic",
+                "hostname": "dynamic",
+                "id": "dynamic",
+                "type": "apm-server",
+                "version": "dynamic",
+                "version_major": "dynamic"
+            },
+            "processor": {
+                "event": "metric",
+                "name": "metric"
+            },
+            "service": {
+                "language": {
+                    "name": "go"
+                },
+                "name": "unknown_service_systemtest_test"
+            }
+        }
+    ]
+}

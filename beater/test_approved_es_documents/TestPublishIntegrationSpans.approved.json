@@ -1,12 +1,6 @@
 {
     "events": [
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2018-07-30T18:53:42.281Z",
             "agent": {
                 "name": "elastic-node",
@@ -35,13 +29,19 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
+            },
+            "event": {
+                "outcome": "success"
             },
             "host": {
                 "architecture": "x64",
@@ -70,8 +70,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "abcdef0123456789"
@@ -129,18 +129,13 @@
                 "id": "01af25874dec69dd"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2018-07-30T18:53:42.281Z",
             "agent": {
                 "name": "elastic-node",
@@ -164,13 +159,19 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
@@ -199,8 +200,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "0000000011111111"
@@ -259,18 +260,13 @@
                 "id": "ab45781d265894fe"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2019-01-09T21:40:53.000Z",
             "agent": {
                 "name": "elastic-node",
@@ -294,13 +290,19 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
@@ -332,8 +334,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "abcdefabcdef7890"
@@ -393,18 +395,13 @@
                 "id": "ab23456a89012345"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2019-01-09T21:40:53.000Z",
             "agent": {
                 "name": "elastic-node",
@@ -428,13 +425,19 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
@@ -463,8 +466,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "ababcdcdefefabde"
@@ -523,18 +526,13 @@
                 "id": "abcdef0123456789abcdef9876543210"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2019-01-09T21:40:53.000Z",
             "agent": {
                 "ephemeral_id": "justanid",
@@ -559,18 +557,23 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "destination": {
                 "address": "0:0::0:1",
-                "ip": "0:0::0:1",
                 "port": 5432
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
+            },
+            "event": {
+                "outcome": "success"
             },
             "host": {
                 "architecture": "x64",
@@ -579,6 +582,12 @@
                 "name": "node-name",
                 "os": {
                     "platform": "darwin"
+                }
+            },
+            "http": {
+                "request.method": "GET",
+                "response": {
+                    "status_code": 200
                 }
             },
             "kubernetes": {
@@ -599,8 +608,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "abcdef0123456789"
@@ -661,7 +670,7 @@
                     "us": 3781
                 },
                 "http": {
-                    "method": "get",
+                    "method": "GET",
                     "response": {
                         "decoded_body_size": 401,
                         "encoded_body_size": 356,
@@ -736,19 +745,15 @@
             "trace": {
                 "id": "abcdef0123456789abcdef9876543210"
             },
+            "url.original": "http://localhost:8000",
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"
             }
         },
         {
-            "@metadata": {
-                "beat": "apm-test",
-                "pipeline": "apm",
-                "type": "_doc",
-                "version": "8.0.0"
-            },
             "@timestamp": "2018-07-30T18:53:42.281Z",
             "agent": {
                 "name": "elastic-node",
@@ -772,17 +777,22 @@
                     "name": "project_name"
                 },
                 "provider": "cloud_provider",
-                "region": "cloud_region"
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
             },
             "container": {
                 "id": "container-id"
             },
             "destination": {
-                "address": "0:0::0:1",
-                "ip": "0:0::0:1"
+                "address": "0:0::0:1"
             },
             "ecs": {
-                "version": "1.5.0"
+                "version": "1.10.0"
+            },
+            "event": {
+                "outcome": "unknown"
             },
             "host": {
                 "architecture": "x64",
@@ -811,8 +821,8 @@
                 "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
-                "version": "8.0.0",
-                "version_major": 8
+                "version": "1.2.3",
+                "version_major": 1
             },
             "parent": {
                 "id": "abcdef0123456789"
@@ -878,6 +888,7 @@
                 "id": "01af25874dec69dd"
             },
             "user": {
+                "domain": "ldap://abc",
                 "email": "s@test.com",
                 "id": "123",
                 "name": "john"

@@ -25,17 +25,24 @@ import (
 
 // Client holds information about the client of a request.
 type Client struct {
+	// Domain holds the client's domain (FQDN).
+	Domain string
+
 	// IP holds the client's IP address.
 	IP net.IP
 
-	// TODO(axw) add client.geo fields, when we have
-	// GeoIP lookup implemented in the server.
+	// Port holds the client's IP port.
+	Port int
 }
 
 func (c *Client) fields() common.MapStr {
 	var fields mapStr
+	fields.maybeSetString("domain", c.Domain)
 	if c.IP != nil {
 		fields.set("ip", c.IP.String())
+	}
+	if c.Port > 0 {
+		fields.set("port", c.Port)
 	}
 	return common.MapStr(fields)
 }

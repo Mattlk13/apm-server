@@ -1,17 +1,29 @@
 {
     "events": [
         {
-            "@timestamp": "2019-12-16T12:46:58.000768068Z",
+            "@timestamp": "2019-12-16T12:46:58.000Z",
             "agent": {
                 "name": "Jaeger",
                 "version": "unknown"
             },
+            "destination": {
+                "address": "foo.bar.com",
+                "port": 80
+            },
+            "event": {
+                "outcome": "success"
+            },
             "host": {
-                "hostname": "host-abc",
-                "name": "host-abc"
+                "hostname": "host-abc"
+            },
+            "http": {
+                "request.method": "get",
+                "response": {
+                    "status_code": 202
+                }
             },
             "parent": {
-                "id": "58585858"
+                "id": "0000000058585858"
             },
             "processor": {
                 "event": "span",
@@ -21,12 +33,16 @@
                 "language": {
                     "name": "unknown"
                 },
-                "name": "unknown",
-                "node": {
-                    "name": "host-abc"
-                }
+                "name": "unknown"
             },
             "span": {
+                "destination": {
+                    "service": {
+                        "name": "http://foo.bar.com",
+                        "resource": "foo.bar.com:80",
+                        "type": "external"
+                    }
+                },
                 "duration": {
                     "us": 79000000
                 },
@@ -39,7 +55,7 @@
                         "original": "http://foo.bar.com?a=12"
                     }
                 },
-                "id": "41414646",
+                "id": "0000000041414646",
                 "name": "HTTP GET",
                 "subtype": "http",
                 "type": "external"
@@ -48,8 +64,9 @@
                 "us": 1576500418000768
             },
             "trace": {
-                "id": "46467830"
-            }
+                "id": "00000000000000000000000046467830"
+            },
+            "url.original": "http://foo.bar.com?a=12"
         }
     ]
 }

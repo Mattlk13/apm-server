@@ -22,32 +22,57 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2"
-	"github.com/open-telemetry/opentelemetry-collector/consumer"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"go.opentelemetry.io/collector/consumer"
 
 	"github.com/elastic/beats/v7/libbeat/logp"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
 	"github.com/elastic/apm-server/agentcfg"
+	"github.com/elastic/apm-server/beater/auth"
+	"github.com/elastic/apm-server/beater/config"
+	"github.com/elastic/apm-server/beater/interceptors"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/kibana"
 	"github.com/elastic/apm-server/processor/otel"
 )
 
 var (
 	gRPCCollectorRegistry                    = monitoring.Default.NewRegistry("apm-server.jaeger.grpc.collect")
-	gRPCCollectorMonitoringMap monitoringMap = request.MonitoringMapForRegistry(gRPCCollectorRegistry, monitoringKeys)
+	gRPCCollectorMonitoringMap monitoringMap = request.MonitoringMapForRegistry(
+		gRPCCollectorRegistry, append(request.DefaultResultIDs,
+			request.IDResponseErrorsRateLimit,
+			request.IDResponseErrorsTimeout,
+			request.IDResponseErrorsUnauthorized,
+		),
+	)
+
+	// RegistryMonitoringMaps provides mappings from the fully qualified gRPC
+	// method name to its respective monitoring map.
+	RegistryMonitoringMaps = map[string]map[request.ResultID]*monitoring.Int{
+		postSpansFullMethod:           gRPCCollectorMonitoringMap,
+		getSamplingStrategyFullMethod: gRPCSamplingMonitoringMap,
+	}
 )
+
+const (
+	postSpansFullMethod           = "/jaeger.api_v2.CollectorService/PostSpans"
+	getSamplingStrategyFullMethod = "/jaeger.api_v2.SamplingManager/GetSamplingStrategy"
+)
+
+// MethodAuthenticators returns a map of all supported Jaeger/gRPC methods to authorization handlers.
+func MethodAuthenticators(authenticator *auth.Authenticator, authTag string) map[string]interceptors.MethodAuthenticator {
+	return map[string]interceptors.MethodAuthenticator{
+		postSpansFullMethod:           postSpansMethodAuthenticator(authenticator, authTag),
+		getSamplingStrategyFullMethod: getSamplingStrategyMethodAuthenticator(authenticator),
+	}
+}
 
 // grpcCollector implements Jaeger api_v2 protocol for receiving tracing data
 type grpcCollector struct {
-	log      *logp.Logger
-	auth     authFunc
-	consumer consumer.TraceConsumer
+	consumer consumer.Traces
 }
 
 // PostSpans implements the api_v2/collector.proto. It converts spans received via Jaeger Proto batch to open-telemetry
@@ -55,23 +80,13 @@ type grpcCollector struct {
 // The implementation of the protobuf contract is based on the open-telemetry implementation at
 // https://github.com/open-telemetry/opentelemetry-collector/tree/master/receiver/jaegerreceiver
 func (c *grpcCollector) PostSpans(ctx context.Context, r *api_v2.PostSpansRequest) (*api_v2.PostSpansResponse, error) {
-	gRPCCollectorMonitoringMap.inc(request.IDRequestCount)
-	defer gRPCCollectorMonitoringMap.inc(request.IDResponseCount)
-
 	if err := c.postSpans(ctx, r.Batch); err != nil {
-		gRPCCollectorMonitoringMap.inc(request.IDResponseErrorsCount)
-		c.log.With(logp.Error(err)).Error("error gRPC PostSpans")
 		return nil, err
 	}
-	gRPCCollectorMonitoringMap.inc(request.IDResponseValidCount)
 	return &api_v2.PostSpansResponse{}, nil
 }
 
 func (c *grpcCollector) postSpans(ctx context.Context, batch model.Batch) error {
-	if err := c.auth(ctx, batch); err != nil {
-		gRPCCollectorMonitoringMap.inc(request.IDResponseErrorsUnauthorized)
-		return status.Error(codes.Unauthenticated, err.Error())
-	}
 	return consumeBatch(ctx, batch, c.consumer, gRPCCollectorMonitoringMap)
 }
 
@@ -83,9 +98,8 @@ var (
 )
 
 type grpcSampler struct {
-	log     *logp.Logger
-	client  kibana.Client
-	fetcher *agentcfg.Fetcher
+	logger  *logp.Logger
+	fetcher agentcfg.Fetcher
 }
 
 // GetSamplingStrategy implements the api_v2/sampling.proto.
@@ -95,30 +109,42 @@ func (s *grpcSampler) GetSamplingStrategy(
 	ctx context.Context,
 	params *api_v2.SamplingStrategyParameters) (*api_v2.SamplingStrategyResponse, error) {
 
-	gRPCSamplingMonitoringMap.inc(request.IDRequestCount)
-	defer gRPCSamplingMonitoringMap.inc(request.IDResponseCount)
-	if err := s.validateKibanaClient(ctx); err != nil {
-		gRPCSamplingMonitoringMap.inc(request.IDResponseErrorsCount)
-		// do not return full error details since this is part of an unprotected endpoint response
-		s.log.With(logp.Error(err)).Error("Configured Kibana client does not support agent remote configuration")
-		return nil, errors.New("agent remote configuration not supported, check server logs for more details")
-	}
 	samplingRate, err := s.fetchSamplingRate(ctx, params.ServiceName)
 	if err != nil {
-		gRPCSamplingMonitoringMap.inc(request.IDResponseErrorsCount)
+		var verr *agentcfg.ValidationError
+		if errors.As(err, &verr) {
+			if err := checkValidationError(verr); err != nil {
+				// do not return full error details since this is part of an unprotected endpoint response
+				s.logger.With(logp.Error(err)).Error("Configured Kibana client does not support agent remote configuration")
+				return nil, errors.New("agent remote configuration not supported, check server logs for more details")
+			}
+		}
+
 		// do not return full error details since this is part of an unprotected endpoint response
-		s.log.With(logp.Error(err)).Error("No valid sampling rate fetched from Kibana.")
+		s.logger.With(logp.Error(err)).Error("No valid sampling rate fetched from Kibana.")
 		return nil, errors.New("no sampling rate available, check server logs for more details")
 	}
-	gRPCSamplingMonitoringMap.inc(request.IDResponseValidCount)
+
 	return &api_v2.SamplingStrategyResponse{
 		StrategyType:          api_v2.SamplingStrategyType_PROBABILISTIC,
-		ProbabilisticSampling: &api_v2.ProbabilisticSamplingStrategy{SamplingRate: samplingRate}}, nil
+		ProbabilisticSampling: &api_v2.ProbabilisticSamplingStrategy{SamplingRate: samplingRate},
+	}, nil
 }
 
 func (s *grpcSampler) fetchSamplingRate(ctx context.Context, service string) (float64, error) {
-	query := agentcfg.Query{Service: agentcfg.Service{Name: service},
-		InsecureAgents: jaegerAgentPrefixes, MarkAsAppliedByAgent: newBool(true)}
+	// Only service, and not agent, is known for config queries.
+	// For anonymous/untrusted agents, we filter the results using
+	// query.InsecureAgents below.
+	authResource := auth.Resource{ServiceName: service}
+	if err := auth.Authorize(ctx, auth.ActionAgentConfig, authResource); err != nil {
+		return 0, err
+	}
+
+	query := agentcfg.Query{
+		Service:              agentcfg.Service{Name: service},
+		InsecureAgents:       jaegerAgentPrefixes,
+		MarkAsAppliedByAgent: true,
+	}
 	result, err := s.fetcher.Fetch(ctx, query)
 	if err != nil {
 		gRPCSamplingMonitoringMap.inc(request.IDResponseErrorsServiceUnavailable)
@@ -137,23 +163,60 @@ func (s *grpcSampler) fetchSamplingRate(ctx context.Context, service string) (fl
 	return 0, fmt.Errorf("no sampling rate found for %v", service)
 }
 
-func (s *grpcSampler) validateKibanaClient(ctx context.Context) error {
-	if s.client == nil {
+func checkValidationError(err *agentcfg.ValidationError) error {
+	body := err.Body()
+	switch {
+	case strings.HasPrefix(body, agentcfg.ErrMsgKibanaDisabled):
 		gRPCSamplingMonitoringMap.inc(request.IDResponseErrorsServiceUnavailable)
 		return errors.New("jaeger remote sampling endpoint is disabled, " +
 			"configure the `apm-server.kibana` section in apm-server.yml to enable it")
-	}
-	supported, err := s.client.SupportsVersion(ctx, agentcfg.KibanaMinVersion, true)
-	if err != nil {
+	case strings.HasPrefix(body, agentcfg.ErrMsgNoKibanaConnection):
 		gRPCSamplingMonitoringMap.inc(request.IDResponseErrorsServiceUnavailable)
 		return fmt.Errorf("error checking kibana version: %w", err)
-	}
-	if !supported {
+	case strings.HasPrefix(body, agentcfg.ErrMsgKibanaVersionNotCompatible):
 		gRPCSamplingMonitoringMap.inc(request.IDResponseErrorsServiceUnavailable)
-		return fmt.Errorf("not supported by used Kibana version, min required Kibana version: %v",
-			agentcfg.KibanaMinVersion)
+		return fmt.Errorf(
+			"not supported by used Kibana version, min required Kibana version: %v",
+			agentcfg.KibanaMinVersion,
+		)
+	default:
+		return nil
 	}
-	return nil
 }
 
-func newBool(b bool) *bool { return &b }
+func postSpansMethodAuthenticator(authenticator *auth.Authenticator, authTag string) interceptors.MethodAuthenticator {
+	return func(ctx context.Context, req interface{}) (auth.AuthenticationDetails, auth.Authorizer, error) {
+		postSpansRequest := req.(*api_v2.PostSpansRequest)
+		batch := &postSpansRequest.Batch
+		var kind, token string
+		for i, kv := range batch.Process.GetTags() {
+			if kv.Key != authTag {
+				continue
+			}
+			// Remove the auth tag.
+			batch.Process.Tags = append(batch.Process.Tags[:i], batch.Process.Tags[i+1:]...)
+			kind, token = auth.ParseAuthorizationHeader(kv.VStr)
+			break
+		}
+		return authenticator.Authenticate(ctx, kind, token)
+	}
+}
+
+func getSamplingStrategyMethodAuthenticator(authenticator *auth.Authenticator) interceptors.MethodAuthenticator {
+	// Sampling strategy queries are always unauthenticated. We still consult
+	// the authenticator in case auth isn't required, in which case we should
+	// not rate limit the request.
+	anonymousAuthenticator, err := auth.NewAuthenticator(config.AgentAuth{
+		Anonymous: config.AnonymousAgentAuth{Enabled: true},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return func(ctx context.Context, req interface{}) (auth.AuthenticationDetails, auth.Authorizer, error) {
+		details, authz, err := authenticator.Authenticate(ctx, "", "")
+		if !errors.Is(err, auth.ErrAuthFailed) {
+			return details, authz, err
+		}
+		return anonymousAuthenticator.Authenticate(ctx, "", "")
+	}
+}

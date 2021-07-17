@@ -18,264 +18,292 @@
 package stream
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"io"
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
-
 	"go.elastic.co/apm"
+
+	"github.com/pkg/errors"
 
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/decoder"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/model/modeldecoder"
-	"github.com/elastic/apm-server/model/modeldecoder/field"
-	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
+	"github.com/elastic/apm-server/model/modeldecoder/rumv3"
+	v2 "github.com/elastic/apm-server/model/modeldecoder/v2"
 	"github.com/elastic/apm-server/utility"
-	"github.com/elastic/apm-server/validation"
 )
 
 var (
-	ErrUnrecognizedObject = errors.New("did not recognize object type")
+	errUnrecognizedObject = errors.New("did not recognize object type")
 )
 
 const (
-	batchSize = 10
+	errorEventType            = "error"
+	metricsetEventType        = "metricset"
+	spanEventType             = "span"
+	transactionEventType      = "transaction"
+	rumv3ErrorEventType       = "e"
+	rumv3TransactionEventType = "x"
+	rumv3MetricsetEventType   = "me"
 )
 
-type decodeMetadataFunc func(interface{}, bool, *model.Metadata) error
-
-// functions with the decodeEventFunc signature decode their input argument into their batch argument (output)
-type decodeEventFunc func(modeldecoder.Input, *model.Batch) error
+type decodeMetadataFunc func(decoder.Decoder, *model.Metadata) error
 
 type Processor struct {
-	Tconfig          transform.Config
 	Mconfig          modeldecoder.Config
 	MaxEventSize     int
 	streamReaderPool sync.Pool
 	decodeMetadata   decodeMetadataFunc
-	models           map[string]decodeEventFunc
 }
 
 func BackendProcessor(cfg *config.Config) *Processor {
 	return &Processor{
-		Tconfig:        transform.Config{},
 		Mconfig:        modeldecoder.Config{Experimental: cfg.Mode == config.ModeExperimental},
 		MaxEventSize:   cfg.MaxEventSize,
-		decodeMetadata: modeldecoder.DecodeMetadata,
-		models: map[string]decodeEventFunc{
-			"transaction": modeldecoder.DecodeTransaction,
-			"span":        modeldecoder.DecodeSpan,
-			"metricset":   modeldecoder.DecodeMetricset,
-			"error":       modeldecoder.DecodeError,
-		},
+		decodeMetadata: v2.DecodeNestedMetadata,
 	}
 }
 
-func RUMProcessor(cfg *config.Config, tcfg *transform.Config) *Processor {
+func RUMV2Processor(cfg *config.Config) *Processor {
 	return &Processor{
-		Tconfig:        *tcfg,
 		Mconfig:        modeldecoder.Config{Experimental: cfg.Mode == config.ModeExperimental},
 		MaxEventSize:   cfg.MaxEventSize,
-		decodeMetadata: modeldecoder.DecodeMetadata,
-		models: map[string]decodeEventFunc{
-			"transaction": modeldecoder.DecodeTransaction,
-			"span":        modeldecoder.DecodeSpan,
-			"metricset":   modeldecoder.DecodeMetricset,
-			"error":       modeldecoder.DecodeError,
-		},
+		decodeMetadata: v2.DecodeNestedMetadata,
 	}
 }
 
-func RUMV3Processor(cfg *config.Config, tcfg *transform.Config) *Processor {
+func RUMV3Processor(cfg *config.Config) *Processor {
 	return &Processor{
-		Tconfig:        *tcfg,
-		Mconfig:        modeldecoder.Config{Experimental: cfg.Mode == config.ModeExperimental, HasShortFieldNames: true},
+		Mconfig:        modeldecoder.Config{Experimental: cfg.Mode == config.ModeExperimental},
 		MaxEventSize:   cfg.MaxEventSize,
-		decodeMetadata: modeldecoder.DecodeRUMV3Metadata,
-		models: map[string]decodeEventFunc{
-			"x":  modeldecoder.DecodeRUMV3Transaction,
-			"e":  modeldecoder.DecodeRUMV3Error,
-			"me": modeldecoder.DecodeRUMV3Metricset,
-		},
+		decodeMetadata: rumv3.DecodeNestedMetadata,
 	}
 }
 
-func (p *Processor) readMetadata(metadata *model.Metadata, reader *streamReader) (*model.Metadata, error) {
-	rawModel, err := reader.Read()
-	if err != nil {
+func (p *Processor) readMetadata(reader *streamReader, metadata *model.Metadata) error {
+	if err := p.decodeMetadata(reader, metadata); err != nil {
+		err = reader.wrapError(err)
 		if err == io.EOF {
-			return nil, &Error{
-				Type:     InvalidInputErrType,
+			return &InvalidInputError{
 				Message:  "EOF while reading metadata",
 				Document: string(reader.LatestLine()),
 			}
 		}
-		return nil, err
-	}
-
-	fieldName := field.Mapper(p.Mconfig.HasShortFieldNames)
-	rawMetadata, ok := rawModel[fieldName("metadata")].(map[string]interface{})
-	if !ok {
-		return nil, &Error{
-			Type:     InvalidInputErrType,
-			Message:  ErrUnrecognizedObject.Error(),
+		if _, ok := err.(*InvalidInputError); ok {
+			return err
+		}
+		return &InvalidInputError{
+			Message:  err.Error(),
 			Document: string(reader.LatestLine()),
 		}
 	}
-
-	if err := p.decodeMetadata(rawMetadata, p.Mconfig.HasShortFieldNames, metadata); err != nil {
-		var ve *validation.Error
-		if errors.As(err, &ve) {
-			return nil, &Error{
-				Type:     InvalidInputErrType,
-				Message:  err.Error(),
-				Document: string(reader.LatestLine()),
-			}
-		}
-		return nil, err
-	}
-	return metadata, nil
+	return nil
 }
 
-// HandleRawModel validates and decodes a single json object into its struct form
-func (p *Processor) HandleRawModel(rawModel map[string]interface{}, batch *model.Batch, requestTime time.Time, streamMetadata model.Metadata) error {
-	for key, decodeEvent := range p.models {
-		entry, ok := rawModel[key]
-		if !ok {
-			continue
+// identifyEventType takes a reader and reads ahead the first key of the
+// underlying json input. This method makes some assumptions met by the
+// input format:
+// - the input is in JSON format
+// - every valid ndjson line only has one root key
+// - the bytes that we must match on are ASCII
+func (p *Processor) identifyEventType(body []byte) []byte {
+	// find event type, trim spaces and account for single and double quotes
+	var quote byte
+	var key []byte
+	for i, r := range body {
+		if r == '"' || r == '\'' {
+			quote = r
+			key = body[i+1:]
+			break
 		}
-		err := decodeEvent(modeldecoder.Input{
-			Raw:         entry,
-			RequestTime: requestTime,
-			Metadata:    streamMetadata,
-			Config:      p.Mconfig,
-		}, batch)
-		if err != nil {
-			return err
-		}
+	}
+	end := bytes.IndexByte(key, quote)
+	if end == -1 {
 		return nil
 	}
-	return ErrUnrecognizedObject
+	return key[:end]
 }
 
-// readBatch will read up to `batchSize` objects from the ndjson stream,
-// returning a slice of Transformables and a boolean indicating that there
-// might be more to read.
+// readBatch reads up to `batchSize` events from the ndjson stream into
+// batch, returning the number of events read and any error encountered.
+// Callers should always process the n > 0 events returned before considering
+// the error err.
 func (p *Processor) readBatch(
 	ctx context.Context,
-	ipRateLimiter *rate.Limiter,
 	requestTime time.Time,
 	streamMetadata *model.Metadata,
 	batchSize int,
 	batch *model.Batch,
 	reader *streamReader,
-	response *Result,
-) bool {
-
-	if ipRateLimiter != nil {
-		// use provided rate limiter to throttle batch read
-		ctxT, cancel := context.WithTimeout(ctx, time.Second)
-		err := ipRateLimiter.WaitN(ctxT, batchSize)
-		cancel()
-		if err != nil {
-			response.Add(&Error{
-				Type:    RateLimitErrType,
-				Message: "rate limit exceeded",
-			})
-			return true
-		}
-	}
+	result *Result,
+) (int, error) {
 
 	// input events are decoded and appended to the batch
+	var n int
 	for i := 0; i < batchSize && !reader.IsEOF(); i++ {
-		rawModel, err := reader.Read()
+		body, err := reader.ReadAhead()
 		if err != nil && err != io.EOF {
-			if e, ok := err.(*Error); ok && (e.Type == InvalidInputErrType || e.Type == InputTooLargeErrType) {
-				response.LimitedAdd(e)
+			err := reader.wrapError(err)
+			var invalidInput *InvalidInputError
+			if errors.As(err, &invalidInput) {
+				result.LimitedAdd(err)
 				continue
 			}
 			// return early, we assume we can only recover from a input error types
-			response.Add(err)
-			return true
+			return n, err
 		}
-		if len(rawModel) > 0 {
-
-			err := p.HandleRawModel(rawModel, batch, requestTime, *streamMetadata)
-			if err != nil {
-				response.LimitedAdd(&Error{
-					Type:     InvalidInputErrType,
-					Message:  err.Error(),
-					Document: string(reader.LatestLine()),
-				})
+		if len(body) == 0 {
+			// required for backwards compatibility - sending empty lines was permitted in previous versions
+			continue
+		}
+		input := modeldecoder.Input{
+			RequestTime: requestTime,
+			Metadata:    *streamMetadata,
+			Config:      p.Mconfig,
+		}
+		switch eventType := p.identifyEventType(body); string(eventType) {
+		case errorEventType:
+			var event model.Error
+			err := v2.DecodeNestedError(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
 				continue
 			}
+			*batch = append(*batch, model.APMEvent{Error: &event})
+			n++
+		case metricsetEventType:
+			var event model.Metricset
+			err := v2.DecodeNestedMetricset(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
+				continue
+			}
+			*batch = append(*batch, model.APMEvent{Metricset: &event})
+			n++
+		case spanEventType:
+			var event model.Span
+			err := v2.DecodeNestedSpan(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
+				continue
+			}
+			*batch = append(*batch, model.APMEvent{Span: &event})
+			n++
+		case transactionEventType:
+			var event model.Transaction
+			err := v2.DecodeNestedTransaction(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
+				continue
+			}
+			*batch = append(*batch, model.APMEvent{Transaction: &event})
+			n++
+		case rumv3ErrorEventType:
+			var event model.Error
+			err := rumv3.DecodeNestedError(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
+				continue
+			}
+			*batch = append(*batch, model.APMEvent{Error: &event})
+			n++
+		case rumv3MetricsetEventType:
+			var event model.Metricset
+			err := rumv3.DecodeNestedMetricset(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
+				continue
+			}
+			*batch = append(*batch, model.APMEvent{Metricset: &event})
+			n++
+		case rumv3TransactionEventType:
+			var event rumv3.Transaction
+			err := rumv3.DecodeNestedTransaction(reader, &input, &event)
+			if handleDecodeErr(err, reader, result) {
+				continue
+			}
+			*batch = append(*batch, model.APMEvent{Transaction: &event.Transaction})
+			for _, ms := range event.Metricsets {
+				*batch = append(*batch, model.APMEvent{Metricset: ms})
+			}
+			for _, span := range event.Spans {
+				*batch = append(*batch, model.APMEvent{Span: span})
+			}
+			n += 1 + len(event.Metricsets) + len(event.Spans)
+		default:
+			result.LimitedAdd(&InvalidInputError{
+				Message:  errors.Wrap(errUnrecognizedObject, string(eventType)).Error(),
+				Document: string(reader.LatestLine()),
+			})
+			continue
 		}
 	}
-	return reader.IsEOF()
+	if reader.IsEOF() {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
-// HandleStream processes a stream of events
-func (p *Processor) HandleStream(ctx context.Context, ipRateLimiter *rate.Limiter, meta *model.Metadata, reader io.Reader, report publish.Reporter) *Result {
-	res := &Result{}
+func handleDecodeErr(err error, r *streamReader, result *Result) bool {
+	if err == nil || err == io.EOF {
+		return false
+	}
+	result.LimitedAdd(&InvalidInputError{
+		Message:  err.Error(),
+		Document: string(r.LatestLine()),
+	})
+	return true
+}
 
+// HandleStream processes a stream of events in batches of batchSize at a time,
+// updating result as events are accepted, or per-event errors occur.
+//
+// HandleStream will return an error when a terminal stream-level error occurs,
+// such as the rate limit being exceeded, or due to authorization errors. In
+// this case the result will only cover the subset of events accepted.
+//
+// Callers must not access result concurrently with HandleStream.
+func (p *Processor) HandleStream(
+	ctx context.Context,
+	meta *model.Metadata,
+	reader io.Reader,
+	batchSize int,
+	processor model.BatchProcessor,
+	result *Result,
+) error {
 	sr := p.getStreamReader(reader)
 	defer sr.release()
 
 	// first item is the metadata object
-	metadata, err := p.readMetadata(meta, sr)
-	if err != nil {
+	if err := p.readMetadata(sr, meta); err != nil {
 		// no point in continuing if we couldn't read the metadata
-		res.Add(err)
-		return res
+		return err
 	}
 
 	requestTime := utility.RequestTime(ctx)
-	tctx := &transform.Context{Config: p.Tconfig}
 
 	sp, ctx := apm.StartSpan(ctx, "Stream", "Reporter")
 	defer sp.End()
 
-	var batch model.Batch
-	var done bool
-	for !done {
-		done = p.readBatch(ctx, ipRateLimiter, requestTime, metadata, batchSize, &batch, sr, res)
-		if batch.Len() == 0 {
-			continue
-		}
-		// NOTE(axw) `report` takes ownership of transformables, which
-		// means we cannot reuse the slice memory. We should investigate
-		// alternative interfaces between the processor and publisher
-		// which would enable better memory reuse.
-		if err := report(ctx, publish.PendingReq{
-			Transformables: batch.Transformables(),
-			Tcontext:       tctx,
-			Trace:          !sp.Dropped(),
-		}); err != nil {
-			switch err {
-			case publish.ErrChannelClosed:
-				res.Add(&Error{
-					Type:    ShuttingDownErrType,
-					Message: "server is shutting down",
-				})
-			case publish.ErrFull:
-				res.Add(&Error{
-					Type:    QueueFullErrType,
-					Message: err.Error(),
-				})
-			default:
-				res.Add(err)
+	for {
+		var batch model.Batch
+		n, readErr := p.readBatch(ctx, requestTime, meta, batchSize, &batch, sr, result)
+		if n > 0 {
+			// NOTE(axw) ProcessBatch takes ownership of batch, which means we cannot reuse
+			// the slice memory. We should investigate alternative interfaces between the
+			// processor and publisher which would enable better memory reuse, e.g. by using
+			// a sync.Pool for creating batches, and having the publisher (terminal processor)
+			// release batches back into the pool.
+			if err := processor.ProcessBatch(ctx, &batch); err != nil {
+				return err
 			}
-			return res
+			result.AddAccepted(len(batch))
 		}
-		res.AddAccepted(batch.Len())
-		batch.Reset()
+		if readErr == io.EOF {
+			break
+		} else if readErr != nil {
+			return readErr
+		}
 	}
-	return res
+	return nil
 }
 
 // getStreamReader returns a streamReader that reads ND-JSON lines from r.
@@ -285,15 +313,15 @@ func (p *Processor) getStreamReader(r io.Reader) *streamReader {
 		return sr
 	}
 	return &streamReader{
-		processor:          p,
-		NDJSONStreamReader: decoder.NewNDJSONStreamReader(r, p.MaxEventSize),
+		processor:           p,
+		NDJSONStreamDecoder: decoder.NewNDJSONStreamDecoder(r, p.MaxEventSize),
 	}
 }
 
 // streamReader wraps NDJSONStreamReader, converting errors to stream errors.
 type streamReader struct {
 	processor *Processor
-	*decoder.NDJSONStreamReader
+	*decoder.NDJSONStreamDecoder
 }
 
 // release releases the streamReader, adding it to its Processor's sync.Pool.
@@ -303,27 +331,27 @@ func (sr *streamReader) release() {
 	sr.processor.streamReaderPool.Put(sr)
 }
 
-func (sr *streamReader) Read() (map[string]interface{}, error) {
-	// TODO(axw) decode into a reused map, clearing out the
-	// map between reads. We would require that decoders copy
-	// any contents of rawModel that they wish to retain after
-	// the call, in order to safely reuse the map.
-	v, err := sr.NDJSONStreamReader.Read()
-	if err != nil {
-		if _, ok := err.(decoder.JSONDecodeError); ok {
-			return nil, &Error{
-				Type:     InvalidInputErrType,
-				Message:  err.Error(),
-				Document: string(sr.LatestLine()),
-			}
-		}
-		if err == decoder.ErrLineTooLong {
-			return nil, &Error{
-				Type:     InputTooLargeErrType,
-				Message:  "event exceeded the permitted size.",
-				Document: string(sr.LatestLine()),
-			}
+func (sr *streamReader) wrapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(decoder.JSONDecodeError); ok {
+		return &InvalidInputError{
+			Message:  err.Error(),
+			Document: string(sr.LatestLine()),
 		}
 	}
-	return v, err
+
+	var e = err
+	if err, ok := err.(modeldecoder.DecoderError); ok {
+		e = err.Unwrap()
+	}
+	if errors.Is(e, decoder.ErrLineTooLong) {
+		return &InvalidInputError{
+			TooLarge: true,
+			Message:  "event exceeded the permitted size.",
+			Document: string(sr.LatestLine()),
+		}
+	}
+	return err
 }

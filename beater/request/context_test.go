@@ -18,17 +18,22 @@
 package request
 
 import (
+	"bytes"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/elastic/beats/v7/libbeat/logp"
 
-	"github.com/elastic/apm-server/beater/authorization"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/headers"
 )
 
@@ -37,7 +42,32 @@ func TestContext_Reset(t *testing.T) {
 	w1.WriteHeader(http.StatusServiceUnavailable)
 	w2 := httptest.NewRecorder()
 	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r1.RemoteAddr = "10.1.2.3:4321"
+	r1.Header.Set("User-Agent", "ua1")
 	r2 := httptest.NewRequest(http.MethodHead, "/new", nil)
+	r2.RemoteAddr = "10.1.2.3:1234"
+	r2.Header.Set("User-Agent", "ua2")
+
+	var multipartBuf bytes.Buffer
+	multipartWriter := multipart.NewWriter(&multipartBuf)
+	fw, err := multipartWriter.CreateFormFile("a_file", "filename.txt")
+	require.NoError(t, err)
+	fw.Write([]byte("abc"))
+	err = multipartWriter.Close()
+	require.NoError(t, err)
+
+	multipartReader := multipart.NewReader(&multipartBuf, multipartWriter.Boundary())
+	form, err := multipartReader.ReadForm(0) // always write to /tmp
+	require.NoError(t, err)
+	r1.MultipartForm = form
+
+	// Check that a temp file was written.
+	require.Len(t, form.File["a_file"], 1)
+	formFile, err := form.File["a_file"][0].Open()
+	require.NoError(t, err)
+	formTempFile := formFile.(*os.File)
+	formTempFilename := formTempFile.Name()
+	formFile.Close()
 
 	c := Context{
 		Request: r1, w: w1,
@@ -50,6 +80,10 @@ func TestContext_Reset(t *testing.T) {
 	}
 	c.Reset(w2, r2)
 
+	// Resetting the context should have removed r1's temporary form file.
+	_, err = os.Stat(formTempFilename)
+	require.True(t, os.IsNotExist(err))
+
 	// use reflection to ensure all fields of `context` are tested
 	cType := reflect.TypeOf(c)
 	cVal := reflect.ValueOf(c)
@@ -57,16 +91,18 @@ func TestContext_Reset(t *testing.T) {
 		switch cType.Field(i).Name {
 		case "Request":
 			assert.Equal(t, r2, cVal.Field(i).Interface())
-		case "Authorization":
-			assert.Equal(t, &authorization.AllowAuth{}, cVal.Field(i).Interface())
+		case "Authentication":
+			assert.Equal(t, auth.AuthenticationDetails{}, cVal.Field(i).Interface())
 		case "w":
 			assert.Equal(t, w2, c.w)
 		case "writeAttempts":
 			assert.Equal(t, 0, c.writeAttempts)
 		case "Result":
 			assertResultIsEmpty(t, cVal.Field(i).Interface().(Result))
-		case "RequestMetadata":
-			assert.Equal(t, Metadata{}, cVal.Field(i).Interface().(Metadata))
+		case "SourceIP":
+			assert.Equal(t, net.ParseIP("10.1.2.3"), cVal.Field(i).Interface())
+		case "UserAgent":
+			assert.Equal(t, "ua2", cVal.Field(i).Interface())
 		default:
 			assert.Empty(t, cVal.Field(i).Interface(), cType.Field(i).Name)
 		}

@@ -29,9 +29,9 @@ import (
 
 	"github.com/apache/thrift/lib/go/thrift"
 	jaegerthrift "github.com/jaegertracing/jaeger/thrift-gen/jaeger"
-	"github.com/open-telemetry/opentelemetry-collector/consumer/consumerdata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/consumer/pdata"
 
 	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/request"
@@ -89,7 +89,7 @@ func testHTTPMux(t *testing.T, test httpMuxTest) {
 	beatertest.ClearRegistry(httpMonitoringMap)
 
 	var consumed bool
-	mux, err := newHTTPMux(traceConsumerFunc(func(ctx context.Context, td consumerdata.TraceData) error {
+	mux, err := newHTTPMux(tracesConsumerFunc(func(ctx context.Context, _ pdata.Traces) error {
 		consumed = true
 		return test.consumerError
 	}))
@@ -104,6 +104,16 @@ func testHTTPMux(t *testing.T, test httpMuxTest) {
 	assert.Equal(t, test.expectedStatusCode, recorder.Code)
 	assert.True(t, consumed)
 	assertMonitoring(t, test.expectedMonitoringMap, httpMonitoringMap)
+}
+
+func assertMonitoring(t *testing.T, expected map[request.ResultID]int64, actual monitoringMap) {
+	for _, k := range monitoringKeys {
+		if val, ok := expected[k]; ok {
+			assert.Equalf(t, val, actual[k].Get(), "%s mismatch", k)
+		} else {
+			assert.Zerof(t, actual[k].Get(), "%s mismatch", k)
+		}
+	}
 }
 
 func TestHTTPHandler_UnknownRoute(t *testing.T) {
@@ -147,7 +157,7 @@ func TestHTTPMux_InvalidBody(t *testing.T) {
 }
 
 func TestHTTPMux_ConsumerError(t *testing.T) {
-	var consumer traceConsumerFunc = func(ctx context.Context, td consumerdata.TraceData) error {
+	var consumer tracesConsumerFunc = func(ctx context.Context, _ pdata.Traces) error {
 		return errors.New("bauch tut weh")
 	}
 	c, recorder := newRequestContext("POST", "/api/traces", encodeThriftSpans(&jaegerthrift.Span{}))
@@ -171,9 +181,9 @@ func encodeThriftSpans(spans ...*jaegerthrift.Span) io.Reader {
 }
 
 func encodeThriftBatch(batch *jaegerthrift.Batch) io.Reader {
-	transport := thrift.NewTMemoryBuffer()
-	if err := batch.Write(thrift.NewTBinaryProtocolTransport(transport)); err != nil {
+	buffer := thrift.NewTMemoryBuffer()
+	if err := batch.Write(context.Background(), thrift.NewTBinaryProtocolConf(buffer, nil)); err != nil {
 		panic(err)
 	}
-	return bytes.NewReader(transport.Buffer.Bytes())
+	return bytes.NewReader(buffer.Bytes())
 }

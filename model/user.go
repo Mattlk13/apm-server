@@ -22,16 +22,15 @@ import (
 )
 
 type User struct {
-	ID    string
-	Email string
-	Name  string
+	Domain string
+	ID     string
+	Email  string
+	Name   string
 }
 
-func (u *User) Fields() common.MapStr {
-	if u == nil {
-		return nil
-	}
+func (u *User) fields() common.MapStr {
 	var user mapStr
+	user.maybeSetString("domain", u.Domain)
 	user.maybeSetString("id", u.ID)
 	user.maybeSetString("email", u.Email)
 	user.maybeSetString("name", u.Name)

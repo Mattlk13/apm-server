@@ -19,14 +19,12 @@ package model
 
 import (
 	"context"
-	"net"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/utility"
 )
 
@@ -54,16 +52,16 @@ type Span struct {
 
 	Message    *Message
 	Name       string
+	Outcome    string
 	Start      *float64
 	Duration   float64
-	Service    *Service
 	Stacktrace Stacktrace
 	Sync       *bool
 	Labels     common.MapStr
 
 	Type    string
-	Subtype *string
-	Action  *string
+	Subtype string
+	Action  string
 
 	DB                 *DB
 	HTTP               *HTTP
@@ -71,15 +69,22 @@ type Span struct {
 	DestinationService *DestinationService
 
 	Experimental interface{}
+
+	// RepresentativeCount holds the approximate number of spans that
+	// this span represents for aggregation. This will only be set when
+	// the sampling rate is known.
+	//
+	// This may be used for scaling metrics; it is not indexed.
+	RepresentativeCount float64
 }
 
 // DB contains information related to a database query of a span event
 type DB struct {
-	Instance     *string
-	Statement    *string
-	Type         *string
-	UserName     *string
-	Link         *string
+	Instance     string
+	Statement    string
+	Type         string
+	UserName     string
+	Link         string
 	RowsAffected *int
 }
 
@@ -87,158 +92,169 @@ type DB struct {
 //
 // TODO(axw) combine this and "Http", which is used by transaction and error, into one type.
 type HTTP struct {
-	URL        *string
-	StatusCode *int
-	Method     *string
+	URL        string
+	StatusCode int
+	Method     string
 	Response   *MinimalResp
 }
 
 // Destination contains contextual data about the destination of a span, such as address and port
 type Destination struct {
-	Address *string
-	Port    *int
+	Address string
+	Port    int
 }
 
 // DestinationService contains information about the destination service of a span event
 type DestinationService struct {
-	Type     *string
-	Name     *string
-	Resource *string
+	Type     string // Deprecated
+	Name     string // Deprecated
+	Resource string
 }
 
 func (db *DB) fields() common.MapStr {
 	if db == nil {
 		return nil
 	}
-	var fields = common.MapStr{}
-	utility.Set(fields, "instance", db.Instance)
-	utility.Set(fields, "statement", db.Statement)
-	utility.Set(fields, "type", db.Type)
-	utility.Set(fields, "rows_affected", db.RowsAffected)
-	if db.UserName != nil {
-		utility.Set(fields, "user", common.MapStr{"name": db.UserName})
+	var fields, user mapStr
+	fields.maybeSetString("instance", db.Instance)
+	fields.maybeSetString("statement", db.Statement)
+	fields.maybeSetString("type", db.Type)
+	fields.maybeSetString("link", db.Link)
+	fields.maybeSetIntptr("rows_affected", db.RowsAffected)
+	if user.maybeSetString("name", db.UserName) {
+		fields.set("user", common.MapStr(user))
 	}
-	utility.Set(fields, "link", db.Link)
-	return fields
+	return common.MapStr(fields)
 }
 
-func (http *HTTP) fields() common.MapStr {
+func (http *HTTP) fields(ecsOnly bool) common.MapStr {
 	if http == nil {
 		return nil
 	}
-	var fields = common.MapStr{}
-	if http.URL != nil {
-		utility.Set(fields, "url", common.MapStr{"original": http.URL})
-	}
-	response := http.Response.Fields()
-	if http.StatusCode != nil {
-		if response == nil {
-			response = common.MapStr{"status_code": *http.StatusCode}
-		} else if http.Response.StatusCode == nil {
-			response["status_code"] = *http.StatusCode
+	var fields, url mapStr
+	if !ecsOnly {
+		if url.maybeSetString("original", http.URL) {
+			fields.set("url", common.MapStr(url))
 		}
 	}
-	utility.Set(fields, "response", response)
-	utility.Set(fields, "method", http.Method)
-	return fields
+	response := http.Response.Fields(ecsOnly)
+	if http.StatusCode > 0 {
+		if response == nil {
+			response = common.MapStr{"status_code": http.StatusCode}
+		} else if http.Response.StatusCode == 0 {
+			response["status_code"] = http.StatusCode
+		}
+	}
+	fields.maybeSetMapStr("response", response)
+	if ecsOnly {
+		fields.maybeSetString("request.method", http.Method)
+	} else {
+		fields.maybeSetString("method", http.Method)
+	}
+	return common.MapStr(fields)
 }
 
 func (d *Destination) fields() common.MapStr {
 	if d == nil {
 		return nil
 	}
-	var fields = common.MapStr{}
-	if d.Address != nil {
-		address := *d.Address
-		fields["address"] = address
-		if ip := net.ParseIP(address); ip != nil {
-			fields["ip"] = address
-		}
+	var fields mapStr
+	if d.Address != "" {
+		fields.set("address", d.Address)
 	}
-	utility.Set(fields, "port", d.Port)
-	return fields
+	if d.Port > 0 {
+		fields.set("port", d.Port)
+	}
+	return common.MapStr(fields)
 }
 
 func (d *DestinationService) fields() common.MapStr {
 	if d == nil {
 		return nil
 	}
-	var fields = common.MapStr{}
-	utility.Set(fields, "type", d.Type)
-	utility.Set(fields, "name", d.Name)
-	utility.Set(fields, "resource", d.Resource)
-	return fields
+	var fields mapStr
+	fields.maybeSetString("type", d.Type)
+	fields.maybeSetString("name", d.Name)
+	fields.maybeSetString("resource", d.Resource)
+	return common.MapStr(fields)
 }
 
-func (e *Span) Transform(ctx context.Context, tctx *transform.Context) []beat.Event {
+func (e *Span) toBeatEvent(ctx context.Context) beat.Event {
 	spanTransformations.Inc()
 	if frames := len(e.Stacktrace); frames > 0 {
 		spanStacktraceCounter.Inc()
 		spanFrameCounter.Add(int64(frames))
 	}
 
-	fields := common.MapStr{
+	fields := mapStr{
 		"processor": spanProcessorEntry,
-		spanDocType: e.fields(ctx, tctx),
+		spanDocType: e.fields(ctx),
 	}
 
 	// first set the generic metadata
-	e.Metadata.Set(fields)
+	e.Metadata.set(&fields, e.Labels)
 
 	// then add event specific information
-	utility.DeepUpdate(fields, "service", e.Service.Fields("", ""))
-	utility.DeepUpdate(fields, "agent", e.Service.AgentFields())
-	// merges with metadata labels, overrides conflicting keys
-	utility.DeepUpdate(fields, "labels", e.Labels)
-	utility.AddID(fields, "parent", e.ParentID)
-	if e.ChildIDs != nil {
-		utility.Set(fields, "child", common.MapStr{"id": e.ChildIDs})
+	var trace, transaction, parent mapStr
+	if trace.maybeSetString("id", e.TraceID) {
+		fields.set("trace", common.MapStr(trace))
 	}
-	utility.AddID(fields, "trace", e.TraceID)
-	utility.AddID(fields, "transaction", e.TransactionID)
-	utility.Set(fields, "experimental", e.Experimental)
-	utility.Set(fields, "destination", e.Destination.fields())
-	utility.Set(fields, "timestamp", utility.TimeAsMicros(e.Timestamp))
+	if transaction.maybeSetString("id", e.TransactionID) {
+		fields.set("transaction", common.MapStr(transaction))
+	}
+	if parent.maybeSetString("id", e.ParentID) {
+		fields.set("parent", common.MapStr(parent))
+	}
+	if len(e.ChildIDs) > 0 {
+		var child mapStr
+		child.set("id", e.ChildIDs)
+		fields.set("child", common.MapStr(child))
+	}
+	fields.maybeSetMapStr("timestamp", utility.TimeAsMicros(e.Timestamp))
+	if e.Experimental != nil {
+		fields.set("experimental", e.Experimental)
+	}
+	fields.maybeSetMapStr("destination", e.Destination.fields())
+	fields.maybeSetMapStr("http", e.HTTP.fields(true))
+	if e.HTTP != nil {
+		fields.maybeSetString("url.original", e.HTTP.URL)
+	}
 
-	return []beat.Event{
-		{
-			Fields:    fields,
-			Timestamp: e.Timestamp,
-		},
+	common.MapStr(fields).Put("event.outcome", e.Outcome)
+
+	return beat.Event{
+		Fields:    common.MapStr(fields),
+		Timestamp: e.Timestamp,
 	}
 }
 
-func (e *Span) fields(ctx context.Context, tctx *transform.Context) common.MapStr {
+func (e *Span) fields(ctx context.Context) common.MapStr {
 	if e == nil {
 		return nil
 	}
-	fields := common.MapStr{}
-	if e.ID != "" {
-		utility.Set(fields, "id", e.ID)
-	}
-	utility.Set(fields, "subtype", e.Subtype)
-	utility.Set(fields, "action", e.Action)
-
-	// common
-	utility.Set(fields, "name", e.Name)
-	utility.Set(fields, "type", e.Type)
-	utility.Set(fields, "sync", e.Sync)
-
+	var fields mapStr
+	fields.set("name", e.Name)
+	fields.set("type", e.Type)
+	fields.maybeSetString("id", e.ID)
+	fields.maybeSetString("subtype", e.Subtype)
+	fields.maybeSetString("action", e.Action)
+	fields.maybeSetBool("sync", e.Sync)
 	if e.Start != nil {
-		utility.Set(fields, "start", utility.MillisAsMicros(*e.Start))
+		fields.set("start", utility.MillisAsMicros(*e.Start))
 	}
+	fields.set("duration", utility.MillisAsMicros(e.Duration))
 
-	utility.Set(fields, "duration", utility.MillisAsMicros(e.Duration))
-
-	utility.Set(fields, "db", e.DB.fields())
-	utility.Set(fields, "http", e.HTTP.fields())
-	utility.DeepUpdate(fields, "destination.service", e.DestinationService.fields())
-
-	utility.Set(fields, "message", e.Message.Fields())
+	fields.maybeSetMapStr("db", e.DB.fields())
+	fields.maybeSetMapStr("http", e.HTTP.fields(false))
+	fields.maybeSetMapStr("message", e.Message.Fields())
+	if destinationServiceFields := e.DestinationService.fields(); len(destinationServiceFields) > 0 {
+		common.MapStr(fields).Put("destination.service", destinationServiceFields)
+	}
 
 	// TODO(axw) we should be using a merged service object, combining
 	// the stream metadata and event-specific service info.
-	st := e.Stacktrace.Transform(ctx, tctx, &e.Metadata.Service)
-	utility.Set(fields, "stacktrace", st)
-	return fields
+	if st := e.Stacktrace.transform(); len(st) > 0 {
+		fields.set("stacktrace", st)
+	}
+	return common.MapStr(fields)
 }

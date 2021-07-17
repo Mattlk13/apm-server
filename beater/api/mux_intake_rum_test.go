@@ -25,27 +25,31 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/apm-server/approvaltest"
 	"github.com/elastic/apm-server/beater/api/intake"
-	"github.com/elastic/apm-server/beater/beatertest"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/middleware"
+	"github.com/elastic/apm-server/beater/ratelimit"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/tests/approvals"
 )
 
 func TestOPTIONS(t *testing.T) {
+	ratelimitStore, _ := ratelimit.NewStore(1, 1, 1)
 	requestTaken := make(chan struct{}, 1)
 	done := make(chan struct{}, 1)
 
 	cfg := cfgEnabledRUM()
 	cfg.RumConfig.AllowOrigins = []string{"*"}
+	authenticator, _ := auth.NewAuthenticator(cfg.AgentAuth)
+
 	h, _ := middleware.Wrap(
 		func(c *request.Context) {
 			requestTaken <- struct{}{}
 			<-done
 		},
-		rumMiddleware(cfg, nil, intake.MonitoringMap)...)
+		rumMiddleware(cfg, authenticator, ratelimitStore, intake.MonitoringMap)...)
 
 	// use this to block the single allowed concurrent requests
 	go func() {
@@ -68,71 +72,64 @@ func TestOPTIONS(t *testing.T) {
 
 func TestRUMHandler_NoAuthorizationRequired(t *testing.T) {
 	cfg := cfgEnabledRUM()
-	cfg.SecretToken = "1234"
+	cfg.AgentAuth.SecretToken = "1234"
 	rec, err := requestToMuxerWithPattern(cfg, IntakeRUMPath)
 	require.NoError(t, err)
 	assert.NotEqual(t, http.StatusUnauthorized, rec.Code)
-	approvals.AssertApproveResult(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
+	approvaltest.ApproveJSON(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
 }
 
 func TestRUMHandler_KillSwitchMiddleware(t *testing.T) {
 	t.Run("OffRum", func(t *testing.T) {
-		rec, err := requestToMuxerWithPattern(config.DefaultConfig(beatertest.MockBeatVersion()), IntakeRUMPath)
+		rec, err := requestToMuxerWithPattern(config.DefaultConfig(), IntakeRUMPath)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
 	})
 
 	t.Run("On", func(t *testing.T) {
 		rec, err := requestToMuxerWithPattern(cfgEnabledRUM(), IntakeRUMPath)
 		require.NoError(t, err)
 		assert.NotEqual(t, http.StatusForbidden, rec.Code)
-		approvals.AssertApproveResult(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
+		approvaltest.ApproveJSON(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
 	})
 }
 
 func TestRUMHandler_CORSMiddleware(t *testing.T) {
 	cfg := cfgEnabledRUM()
 	cfg.RumConfig.AllowOrigins = []string{"foo"}
-	h, err := rumIntakeHandler(cfg, nil, beatertest.NilReporter)
-	require.NoError(t, err)
-	c, w := beatertest.ContextWithResponseRecorder(http.MethodPost, "/")
-	c.Request.Header.Set(headers.Origin, "bar")
-	h(c)
+	h := newTestMux(t, cfg)
 
-	assert.Equal(t, http.StatusForbidden, w.Code)
+	for _, path := range []string{"/intake/v2/rum/events", "/intake/v3/rum/events"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set(headers.Origin, "bar")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	}
 }
 
 func TestIntakeRUMHandler_PanicMiddleware(t *testing.T) {
-	h, err := rumIntakeHandler(config.DefaultConfig(beatertest.MockBeatVersion()), nil, beatertest.NilReporter)
-	require.NoError(t, err)
-	rec := &beatertest.WriterPanicOnce{}
-	c := request.NewContext()
-	c.Reset(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	h(c)
-	assert.Equal(t, http.StatusInternalServerError, rec.StatusCode)
-	approvals.AssertApproveResult(t, approvalPathIntakeRUM(t.Name()), rec.Body.Bytes())
+	testPanicMiddleware(t, "/intake/v2/rum/events", approvalPathIntakeRUM(t.Name()))
+	testPanicMiddleware(t, "/intake/v3/rum/events", approvalPathIntakeRUM(t.Name()))
 }
 
 func TestRumHandler_MonitoringMiddleware(t *testing.T) {
-	h, err := rumIntakeHandler(config.DefaultConfig(beatertest.MockBeatVersion()), nil, beatertest.NilReporter)
-	require.NoError(t, err)
-	c, _ := beatertest.ContextWithResponseRecorder(http.MethodPost, "/")
 	// send GET request resulting in 403 Forbidden error
-	expected := map[request.ResultID]int{
-		request.IDRequestCount:            1,
-		request.IDResponseCount:           1,
-		request.IDResponseErrorsCount:     1,
-		request.IDResponseErrorsForbidden: 1}
-
-	equal, result := beatertest.CompareMonitoringInt(h, c, expected, intake.MonitoringMap)
-	assert.True(t, equal, result)
+	for _, path := range []string{"/intake/v2/rum/events", "/intake/v3/rum/events"} {
+		testMonitoringMiddleware(t, path, intake.MonitoringMap, map[request.ResultID]int{
+			request.IDRequestCount:            1,
+			request.IDResponseCount:           1,
+			request.IDResponseErrorsCount:     1,
+			request.IDResponseErrorsForbidden: 1,
+		})
+	}
 }
 
 func cfgEnabledRUM() *config.Config {
-	cfg := config.DefaultConfig(beatertest.MockBeatVersion())
-	t := true
-	cfg.RumConfig.Enabled = &t
+	cfg := config.DefaultConfig()
+	cfg.RumConfig.Enabled = true
+	cfg.AgentAuth.Anonymous.Enabled = true
 	return cfg
 }
 

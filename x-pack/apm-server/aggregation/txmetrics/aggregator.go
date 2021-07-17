@@ -10,18 +10,18 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/pkg/errors"
 
 	"github.com/elastic/beats/v7/libbeat/logp"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 	"github.com/elastic/go-hdrhistogram"
 
 	logs "github.com/elastic/apm-server/log"
 	"github.com/elastic/apm-server/model"
-	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/transform"
 )
 
 const (
@@ -36,31 +36,46 @@ const (
 	// we will record a count of 5000 (2 * 2.5 * histogramCountScale). When we
 	// publish metrics, we will scale down to 5 (5000 / histogramCountScale).
 	histogramCountScale = 1000
+
+	// tooManyGroupsLoggerRateLimit is the maximum frequency at which
+	// "too many groups" log messages are logged.
+	tooManyGroupsLoggerRateLimit = time.Minute
+
+	metricsetName = "transaction"
 )
 
 // Aggregator aggregates transaction durations, periodically publishing histogram metrics.
 type Aggregator struct {
-	config          AggregatorConfig
-	userAgentLookup *userAgentLookup
+	stopMu   sync.Mutex
+	stopping chan struct{}
+	stopped  chan struct{}
+
+	config              AggregatorConfig
+	metrics             *aggregatorMetrics // heap-allocated for 64-bit alignment
+	tooManyGroupsLogger *logp.Logger
 
 	mu               sync.RWMutex
 	active, inactive *metrics
 }
 
+type aggregatorMetrics struct {
+	overflowed int64
+}
+
 // AggregatorConfig holds configuration for creating an Aggregator.
 type AggregatorConfig struct {
-	// Report is a publish.Reporter for reporting metrics documents.
-	Report publish.Reporter
+	// BatchProcessor is a model.BatchProcessor for asynchronously processing metrics documents.
+	BatchProcessor model.BatchProcessor
 
 	// Logger is the logger for logging histogram aggregation/publishing.
 	//
 	// If Logger is nil, a new logger will be constructed.
 	Logger *logp.Logger
 
-	// MaxBuckets is the maximum number of distinct transaction groups
-	// to store within an aggregation period. Once this number of groups
-	// has been reached, any new aggregation keys will cause individual
-	// metrics documents to be immediately published.
+	// MaxTransactionGroups is the maximum number of distinct transaction
+	// group metrics to store within an aggregation period. Once this number
+	// of groups has been reached, any new aggregation keys will cause
+	// individual metrics documents to be immediately published.
 	MaxTransactionGroups int
 
 	// MetricsInterval is the interval between publishing of aggregated
@@ -72,16 +87,12 @@ type AggregatorConfig struct {
 	// to maintain in the HDR Histograms. HDRHistogramSignificantFigures
 	// must be in the range [1,5].
 	HDRHistogramSignificantFigures int
-
-	// RUMUserAgentLRUSize is the size of the LRU cache for mapping RUM
-	// page-load User-Agent strings to browser names.
-	RUMUserAgentLRUSize int
 }
 
 // Validate validates the aggregator config.
 func (config AggregatorConfig) Validate() error {
-	if config.Report == nil {
-		return errors.New("Report unspecified")
+	if config.BatchProcessor == nil {
+		return errors.New("BatchProcessor unspecified")
 	}
 	if config.MaxTransactionGroups <= 0 {
 		return errors.New("MaxTransactionGroups unspecified or negative")
@@ -91,9 +102,6 @@ func (config AggregatorConfig) Validate() error {
 	}
 	if n := config.HDRHistogramSignificantFigures; n < 1 || n > 5 {
 		return errors.Errorf("HDRHistogramSignificantFigures (%d) outside range [1,5]", n)
-	}
-	if config.RUMUserAgentLRUSize <= 0 {
-		return errors.New("RUMUserAgentLRUSize unspecified or negative")
 	}
 	return nil
 }
@@ -106,36 +114,89 @@ func NewAggregator(config AggregatorConfig) (*Aggregator, error) {
 	if config.Logger == nil {
 		config.Logger = logp.NewLogger(logs.TransactionMetrics)
 	}
-	ual, err := newUserAgentLookup(config.RUMUserAgentLRUSize)
-	if err != nil {
-		return nil, err
-	}
 	return &Aggregator{
-		config:          config,
-		userAgentLookup: ual,
-		active:          newMetrics(config.MaxTransactionGroups),
-		inactive:        newMetrics(config.MaxTransactionGroups),
+		stopping:            make(chan struct{}),
+		stopped:             make(chan struct{}),
+		config:              config,
+		metrics:             &aggregatorMetrics{},
+		tooManyGroupsLogger: config.Logger.WithOptions(logs.WithRateLimit(tooManyGroupsLoggerRateLimit)),
+		active:              newMetrics(config.MaxTransactionGroups),
+		inactive:            newMetrics(config.MaxTransactionGroups),
 	}, nil
 }
 
-// Run runs the Aggregator, periodically publishing and clearing
-// aggregated metrics. Run returns when either a fatal error occurs,
-// or the context is cancelled.
-func (a *Aggregator) Run(ctx context.Context) error {
+// Run runs the Aggregator, periodically publishing and clearing aggregated
+// metrics. Run returns when either a fatal error occurs, or the Aggregator's
+// Stop method is invoked.
+func (a *Aggregator) Run() error {
 	ticker := time.NewTicker(a.config.MetricsInterval)
 	defer ticker.Stop()
-	for {
+	defer func() {
+		a.stopMu.Lock()
+		defer a.stopMu.Unlock()
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-a.stopped:
+		default:
+			close(a.stopped)
+		}
+	}()
+	var stop bool
+	for !stop {
+		select {
+		case <-a.stopping:
+			stop = true
 		case <-ticker.C:
 		}
-		if err := a.publish(ctx); err != nil {
+		if err := a.publish(context.Background()); err != nil {
 			a.config.Logger.With(logp.Error(err)).Warnf(
 				"publishing transaction metrics failed: %s", err,
 			)
 		}
 	}
+	return nil
+}
+
+// Stop stops the Aggregator if it is running, waiting for it to flush any
+// aggregated metrics and return, or for the context to be cancelled.
+//
+// After Stop has been called the aggregator cannot be reused, as the Run
+// method will always return immediately.
+func (a *Aggregator) Stop(ctx context.Context) error {
+	a.stopMu.Lock()
+	select {
+	case <-a.stopped:
+	case <-a.stopping:
+		// Already stopping/stopped.
+	default:
+		close(a.stopping)
+	}
+	a.stopMu.Unlock()
+
+	select {
+	case <-a.stopped:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// CollectMonitoring may be called to collect monitoring metrics from the
+// aggregation. It is intended to be used with libbeat/monitoring.NewFunc.
+//
+// The metrics should be added to the "apm-server.aggregation.txmetrics" registry.
+func (a *Aggregator) CollectMonitoring(_ monitoring.Mode, V monitoring.Visitor) {
+	V.OnRegistryStart()
+	defer V.OnRegistryFinished()
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	m := a.active
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	monitoring.ReportInt(V, "active_groups", int64(m.entries))
+	monitoring.ReportInt(V, "overflowed", atomic.LoadInt64(&a.metrics.overflowed))
 }
 
 func (a *Aggregator) publish(ctx context.Context) error {
@@ -156,41 +217,37 @@ func (a *Aggregator) publish(ctx context.Context) error {
 	// the specific time period (date_range) on the metrics documents.
 
 	now := time.Now()
-	metricsets := make([]transform.Transformable, 0, a.inactive.entries)
+	batch := make(model.Batch, 0, a.inactive.entries)
 	for hash, entries := range a.inactive.m {
 		for _, entry := range entries {
-			counts, values := entry.transactionMetrics.histogramBuckets()
-			metricset := makeMetricset(entry.transactionAggregationKey, hash, now, counts, values)
-			metricsets = append(metricsets, &metricset)
+			totalCount, counts, values := entry.transactionMetrics.histogramBuckets()
+			metricset := makeMetricset(entry.transactionAggregationKey, hash, now, totalCount, counts, values)
+			batch = append(batch, model.APMEvent{Metricset: &metricset})
 		}
 		delete(a.inactive.m, hash)
 	}
 	a.inactive.entries = 0
 
-	a.config.Logger.Debugf("publishing %d metricsets", len(metricsets))
-	return a.config.Report(ctx, publish.PendingReq{
-		Transformables: metricsets,
-		Trace:          true,
-	})
+	a.config.Logger.Debugf("publishing %d metricsets", len(batch))
+	return a.config.BatchProcessor.ProcessBatch(ctx, &batch)
 }
 
-// AggregateTransformables aggregates all transactions contained in
-// "in", returning the input with any metricsets requiring immediate
-// publication appended.
+// ProcessBatch aggregates all transactions contained in "b", adding to it any
+// metricsets requiring immediate publication appended.
 //
-// This method is expected to be used immediately prior to publishing
-// the events, so that the metricsets requiring immediate publication
-// can be included in the same batch.
-func (a *Aggregator) AggregateTransformables(in []transform.Transformable) []transform.Transformable {
-	out := in
-	for _, tf := range in {
-		if tx, ok := tf.(*model.Transaction); ok {
-			if metricset := a.AggregateTransaction(tx); metricset != nil {
-				out = append(out, metricset)
-			}
+// This method is expected to be used immediately prior to publishing the
+// events, so that the metricsets requiring immediate publication can be
+// included in the same batch.
+func (a *Aggregator) ProcessBatch(ctx context.Context, b *model.Batch) error {
+	for _, event := range *b {
+		if event.Transaction == nil {
+			continue
+		}
+		if metricset := a.AggregateTransaction(event.Transaction); metricset != nil {
+			*b = append(*b, model.APMEvent{Metricset: metricset})
 		}
 	}
-	return out
+	return nil
 }
 
 // AggregateTransaction aggregates transaction metrics.
@@ -200,20 +257,28 @@ func (a *Aggregator) AggregateTransformables(in []transform.Transformable) []tra
 // be returned which should be published immediately, along with the
 // transaction. Otherwise, the returned metricset will be nil.
 func (a *Aggregator) AggregateTransaction(tx *model.Transaction) *model.Metricset {
+	if tx.RepresentativeCount <= 0 {
+		return nil
+	}
+
 	key := a.makeTransactionAggregationKey(tx)
 	hash := key.hash()
 	count := transactionCount(tx)
 	duration := time.Duration(tx.Duration * float64(time.Millisecond))
-	if a.updateTransactionMetrics(key, hash, count, duration) {
+	if a.updateTransactionMetrics(key, hash, tx.RepresentativeCount, duration) {
 		return nil
 	}
 	// Too many aggregation keys: could not update metrics, so immediately
 	// publish a single-value metric document.
-	//
-	// TODO(axw) log a warning with a rate-limit, increment a counter.
+	a.tooManyGroupsLogger.Warn(`
+Transaction group limit reached, falling back to sending individual metric documents.
+This is typically caused by ineffective transaction grouping, e.g. by creating many
+unique transaction names.`[1:],
+	)
+	atomic.AddInt64(&a.metrics.overflowed, 1)
 	counts := []int64{int64(math.Round(count))}
 	values := []float64{float64(durationMicros(duration))}
-	metricset := makeMetricset(key, hash, time.Now(), counts, values)
+	metricset := makeMetricset(key, hash, time.Now(), counts[0], counts, values)
 	return &metricset
 }
 
@@ -275,40 +340,31 @@ func (a *Aggregator) updateTransactionMetrics(key transactionAggregationKey, has
 }
 
 func (a *Aggregator) makeTransactionAggregationKey(tx *model.Transaction) transactionAggregationKey {
-	var userAgentName string
-	if tx.Type == "page-load" {
-		// The APM app in Kibana has a special case for "page-load"
-		// transaction types, rendering distributions by country and
-		// browser. We use the same logic to decide whether or not
-		// to include user_agent.name in the aggregation key.
-		userAgentName = a.userAgentLookup.getUserAgentName(tx.Metadata.UserAgent.Original)
-	}
-
 	return transactionAggregationKey{
-		traceRoot:         tx.ParentID == "",
-		transactionName:   tx.Name,
-		transactionResult: tx.Result,
-		transactionType:   tx.Type,
+		traceRoot:          tx.ParentID == "",
+		transactionName:    tx.Name,
+		transactionOutcome: tx.Outcome,
+		transactionResult:  tx.Result,
+		transactionType:    tx.Type,
 
 		agentName:          tx.Metadata.Service.Agent.Name,
 		serviceEnvironment: tx.Metadata.Service.Environment,
 		serviceName:        tx.Metadata.Service.Name,
 		serviceVersion:     tx.Metadata.Service.Version,
 
-		hostname:          tx.Metadata.System.Hostname(),
+		hostname:          tx.Metadata.System.DetectedHostname,
 		containerID:       tx.Metadata.System.Container.ID,
 		kubernetesPodName: tx.Metadata.System.Kubernetes.PodName,
-
-		userAgentName: userAgentName,
-
-		// TODO(axw) clientCountryISOCode, requires geoIP lookup in apm-server.
 	}
 }
 
 // makeMetricset makes a Metricset from key, counts, and values, with timestamp ts.
-func makeMetricset(key transactionAggregationKey, hash uint64, ts time.Time, counts []int64, values []float64) model.Metricset {
+func makeMetricset(
+	key transactionAggregationKey, hash uint64, ts time.Time, totalCount int64, counts []int64, values []float64,
+) model.Metricset {
 	out := model.Metricset{
 		Timestamp: ts,
+		Name:      metricsetName,
 		Metadata: model.Metadata{
 			Service: model.Service{
 				Name:        key.serviceName,
@@ -321,10 +377,9 @@ func makeMetricset(key transactionAggregationKey, hash uint64, ts time.Time, cou
 				Container:        model.Container{ID: key.containerID},
 				Kubernetes:       model.Kubernetes{PodName: key.kubernetesPodName},
 			},
-			UserAgent: model.UserAgent{
-				Name: key.userAgentName,
-			},
-			// TODO(axw) include client.geo.country_iso_code somewhere
+		},
+		Event: model.MetricsetEventCategorization{
+			Outcome: key.transactionOutcome,
 		},
 		Transaction: model.MetricsetTransaction{
 			Name:   key.transactionName,
@@ -332,11 +387,14 @@ func makeMetricset(key transactionAggregationKey, hash uint64, ts time.Time, cou
 			Result: key.transactionResult,
 			Root:   key.traceRoot,
 		},
-		Samples: []model.Sample{{
-			Name:   "transaction.duration.histogram",
-			Counts: counts,
-			Values: values,
-		}},
+		Samples: map[string]model.MetricsetSample{
+			"transaction.duration.histogram": {
+				Type:   model.MetricTypeHistogram,
+				Counts: counts,
+				Values: values,
+			},
+		},
+		DocCount: totalCount,
 	}
 
 	// Record an timeseries instance ID, which should be uniquely identify the aggregation key.
@@ -371,10 +429,8 @@ type metricsMapEntry struct {
 }
 
 type transactionAggregationKey struct {
-	traceRoot bool
-	agentName string
-	// TODO(axw) requires geoIP lookup in apm-server.
-	//clientCountryISOCode string
+	traceRoot          bool
+	agentName          string
 	containerID        string
 	hostname           string
 	kubernetesPodName  string
@@ -382,19 +438,17 @@ type transactionAggregationKey struct {
 	serviceName        string
 	serviceVersion     string
 	transactionName    string
+	transactionOutcome string
 	transactionResult  string
 	transactionType    string
-	userAgentName      string
 }
 
 func (k *transactionAggregationKey) hash() uint64 {
-	// TODO(axw) when we upgrade to Go 1.14, change this to maphash.
 	var h xxhash.Digest
 	if k.traceRoot {
 		h.WriteString("1")
 	}
 	h.WriteString(k.agentName)
-	// TODO(axw) clientCountryISOCode
 	h.WriteString(k.containerID)
 	h.WriteString(k.hostname)
 	h.WriteString(k.kubernetesPodName)
@@ -402,9 +456,9 @@ func (k *transactionAggregationKey) hash() uint64 {
 	h.WriteString(k.serviceName)
 	h.WriteString(k.serviceVersion)
 	h.WriteString(k.transactionName)
+	h.WriteString(k.transactionOutcome)
 	h.WriteString(k.transactionResult)
 	h.WriteString(k.transactionType)
-	h.WriteString(k.userAgentName)
 	return h.Sum64()
 }
 
@@ -417,7 +471,7 @@ func (m *transactionMetrics) recordDuration(d time.Duration, n float64) {
 	m.histogram.RecordValuesAtomic(durationMicros(d), count)
 }
 
-func (m *transactionMetrics) histogramBuckets() (counts []int64, values []float64) {
+func (m *transactionMetrics) histogramBuckets() (totalCount int64, counts []int64, values []float64) {
 	// From https://www.elastic.co/guide/en/elasticsearch/reference/current/histogram.html:
 	//
 	// "For the High Dynamic Range (HDR) histogram mode, the values array represents
@@ -430,11 +484,12 @@ func (m *transactionMetrics) histogramBuckets() (counts []int64, values []float6
 		if b.Count <= 0 {
 			continue
 		}
-		count := math.Round(float64(b.Count) / histogramCountScale)
-		counts = append(counts, int64(count))
+		count := int64(math.Round(float64(b.Count) / histogramCountScale))
+		counts = append(counts, count)
 		values = append(values, float64(b.To))
+		totalCount += count
 	}
-	return counts, values
+	return totalCount, counts, values
 }
 
 func transactionCount(tx *model.Transaction) float64 {

@@ -34,20 +34,6 @@ get_go_version() {
   fi
 }
 
-# install_gimme
-# Install gimme to HOME/bin.
-install_gimme() {
-  # Install gimme
-  if [ ! -f "${HOME}/bin/gimme" ]; then
-    mkdir -p ${HOME}/bin
-    curl -sL -o ${HOME}/bin/gimme https://raw.githubusercontent.com/travis-ci/gimme/v1.1.0/gimme
-    chmod +x ${HOME}/bin/gimme
-  fi
-
-  GIMME="${HOME}/bin/gimme"
-  debug "Gimme version $(${GIMME} version)"
-}
-
 # setup_go_root "version"
 # This configures the Go version being used. It sets GOROOT and adds
 # GOROOT/bin to the PATH. It uses gimme to download the Go version if
@@ -55,11 +41,26 @@ install_gimme() {
 setup_go_root() {
   local version=${1}
 
-  install_gimme
+  # Use the current Go installation if the given Go version is already
+  # installed and configured.
+  if command -v go &>/dev/null ; then
+    debug "Found Go. Checking version..."
+    FOUND_GO_VERSION=$(go version|awk '{print $3}'|sed s/go//)
+    if [ "$FOUND_GO_VERSION" == "$version" ] ; then
+      debug "Versions match. No need to install Go. Exiting."
+      FOUND_GO="true"
+    fi
+  fi
 
-  # Setup GOROOT and add go to the PATH.
-  ${GIMME} "${version}" > /dev/null
-  source "${HOME}/.gimme/envs/go${version}.env" 2> /dev/null
+  # Install Go with gimme in case the given Go version is not
+  # installed.
+  if [ -z $FOUND_GO ] ; then
+    # Setup GOROOT and add go to the PATH.
+    GIMME=${_sdir}/gimme/gimme
+    debug "Gimme version $(${GIMME} version)"
+    ${GIMME} "${version}" > /dev/null
+    source "${HOME}/.gimme/envs/go${version}.env" 2> /dev/null
+  fi
 
   debug "$(go version)"
 }

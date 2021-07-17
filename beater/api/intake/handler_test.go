@@ -22,29 +22,26 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
-	"github.com/elastic/apm-server/beater/api/ratelimit"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/apm-server/beater/beatertest"
+	"github.com/elastic/apm-server/approvaltest"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/headers"
 	"github.com/elastic/apm-server/beater/request"
+	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-server/model/modelprocessor"
 	"github.com/elastic/apm-server/processor/stream"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/tests/approvals"
-	"github.com/elastic/apm-server/tests/loader"
 )
 
 func TestIntakeHandler(t *testing.T) {
-	var rateLimit, err = ratelimit.NewStore(1, 0, 0)
-	require.NoError(t, err)
 	for name, tc := range map[string]testcaseIntakeHandler{
 		"Method": {
 			path: "errors.ndjson",
@@ -59,11 +56,6 @@ func TestIntakeHandler(t *testing.T) {
 				return req
 			}(),
 			code: http.StatusBadRequest, id: request.IDResponseErrorsValidate,
-		},
-		"RateLimit": {
-			path:      "errors.ndjson",
-			rateLimit: rateLimit,
-			code:      http.StatusTooManyRequests, id: request.IDResponseErrorsRateLimit,
 		},
 		"BodyReader": {
 			path: "errors.ndjson",
@@ -95,13 +87,24 @@ func TestIntakeHandler(t *testing.T) {
 			code: http.StatusAccepted, id: request.IDResponseValidAccepted,
 		},
 		"TooLarge": {
-			path: "errors.ndjson", processor: &stream.Processor{},
+			path: "errors.ndjson",
+			processor: func() *stream.Processor {
+				p := stream.BackendProcessor(config.DefaultConfig())
+				p.MaxEventSize = 10
+				return p
+			}(),
 			code: http.StatusBadRequest, id: request.IDResponseErrorsRequestTooLarge},
 		"Closing": {
-			path: "errors.ndjson", reporter: beatertest.ErrorReporterFn(publish.ErrChannelClosed),
+			path: "errors.ndjson",
+			batchProcessor: model.ProcessBatchFunc(func(context.Context, *model.Batch) error {
+				return publish.ErrChannelClosed
+			}),
 			code: http.StatusServiceUnavailable, id: request.IDResponseErrorsShuttingDown},
 		"FullQueue": {
-			path: "errors.ndjson", reporter: beatertest.ErrorReporterFn(publish.ErrFull),
+			path: "errors.ndjson",
+			batchProcessor: model.ProcessBatchFunc(func(context.Context, *model.Batch) error {
+				return publish.ErrFull
+			}),
 			code: http.StatusServiceUnavailable, id: request.IDResponseErrorsFullQueue},
 		"InvalidEvent": {
 			path: "invalid-event.ndjson",
@@ -119,7 +122,7 @@ func TestIntakeHandler(t *testing.T) {
 			path: "invalid-metadata-2.ndjson",
 			code: http.StatusBadRequest, id: request.IDResponseErrorsValidate},
 		"UnrecognizedEvent": {
-			path: "unrecognized-event.ndjson",
+			path: "invalid-event-type.ndjson",
 			code: http.StatusBadRequest, id: request.IDResponseErrorsValidate},
 		"Success": {
 			path: "errors.ndjson",
@@ -130,11 +133,8 @@ func TestIntakeHandler(t *testing.T) {
 			// setup
 			tc.setup(t)
 
-			if tc.rateLimit != nil {
-				tc.c.RateLimiter = tc.rateLimit.ForIP(&http.Request{})
-			}
 			// call handler
-			h := Handler(tc.processor, tc.reporter)
+			h := Handler(tc.processor, emptyRequestMetadata, tc.batchProcessor)
 			h(tc.c)
 
 			require.Equal(t, string(tc.id), string(tc.c.Result.ID))
@@ -148,19 +148,18 @@ func TestIntakeHandler(t *testing.T) {
 				assert.NotNil(t, tc.c.Result.Err)
 			}
 			body := tc.w.Body.Bytes()
-			approvals.AssertApproveResult(t, "test_approved/"+name, body)
+			approvaltest.ApproveJSON(t, "test_approved/"+name, body)
 		})
 	}
 }
 
 type testcaseIntakeHandler struct {
-	c         *request.Context
-	w         *httptest.ResponseRecorder
-	r         *http.Request
-	processor *stream.Processor
-	rateLimit *ratelimit.Store
-	reporter  func(ctx context.Context, p publish.PendingReq) error
-	path      string
+	c              *request.Context
+	w              *httptest.ResponseRecorder
+	r              *http.Request
+	processor      *stream.Processor
+	batchProcessor model.BatchProcessor
+	path           string
 
 	code int
 	id   request.ResultID
@@ -168,15 +167,15 @@ type testcaseIntakeHandler struct {
 
 func (tc *testcaseIntakeHandler) setup(t *testing.T) {
 	if tc.processor == nil {
-		cfg := config.DefaultConfig("7.0.0")
+		cfg := config.DefaultConfig()
 		tc.processor = stream.BackendProcessor(cfg)
 	}
-	if tc.reporter == nil {
-		tc.reporter = beatertest.NilReporter
+	if tc.batchProcessor == nil {
+		tc.batchProcessor = modelprocessor.Nop{}
 	}
 
 	if tc.r == nil {
-		data, err := loader.LoadDataAsBytes(filepath.Join("../testdata/intake-v2/", tc.path))
+		data, err := ioutil.ReadFile(filepath.Join("../../../testdata/intake-v2", tc.path))
 		require.NoError(t, err)
 
 		tc.r = httptest.NewRequest("POST", "/", bytes.NewBuffer(data))
@@ -193,7 +192,7 @@ func (tc *testcaseIntakeHandler) setup(t *testing.T) {
 }
 
 func compressedRequest(t *testing.T, compressionType string, compressPayload bool) *http.Request {
-	data, err := loader.LoadDataAsBytes("../testdata/intake-v2/errors.ndjson")
+	data, err := ioutil.ReadFile("../../../testdata/intake-v2/errors.ndjson")
 	require.NoError(t, err)
 	var buf bytes.Buffer
 	if compressPayload {
@@ -215,4 +214,8 @@ func compressedRequest(t *testing.T, compressionType string, compressPayload boo
 	req.Header.Set(headers.ContentType, "application/x-ndjson")
 	req.Header.Set(headers.ContentEncoding, compressionType)
 	return req
+}
+
+func emptyRequestMetadata(*request.Context) model.Metadata {
+	return model.Metadata{}
 }

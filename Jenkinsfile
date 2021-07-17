@@ -16,6 +16,7 @@ pipeline {
     DOCKER_SECRET = 'secret/apm-team/ci/docker-registry/prod'
     DOCKER_REGISTRY = 'docker.elastic.co'
     DOCKER_IMAGE = "${env.DOCKER_REGISTRY}/observability-ci/apm-server"
+    ONLY_DOCS = "false"
   }
   options {
     timeout(time: 2, unit: 'HOURS')
@@ -28,10 +29,11 @@ pipeline {
     quietPeriod(10)
   }
   triggers {
-    issueCommentTrigger('(?i).*(?:jenkins\\W+)?run\\W+(?:the\\W+)?(?:hey-apm\\W+)?tests(?:\\W+please)?.*')
+    issueCommentTrigger('(?i)(.*(?:jenkins\\W+)?run\\W+(?:the\\W+)?(?:(hey-apm|package|arm)\\W+)?tests(?:\\W+please)?.*|^\\/test|^\\/hey-apm|^\\/package)')
   }
   parameters {
     booleanParam(name: 'Run_As_Master_Branch', defaultValue: false, description: 'Allow to run any steps on a PR, some steps normally only run on master branch.')
+    booleanParam(name: 'arm_ci', defaultValue: true, description: 'Enable ARM build')
     booleanParam(name: 'linux_ci', defaultValue: true, description: 'Enable Linux build')
     booleanParam(name: 'osx_ci', defaultValue: true, description: 'Enable OSX CI')
     booleanParam(name: 'windows_ci', defaultValue: true, description: 'Enable Windows CI')
@@ -53,7 +55,6 @@ pipeline {
       environment {
         PATH = "${env.PATH}:${env.WORKSPACE}/bin"
         HOME = "${env.WORKSPACE}"
-        GOPATH = "${env.WORKSPACE}"
       }
       options { skipDefaultCheckout() }
       steps {
@@ -64,7 +65,6 @@ pipeline {
         stash allowEmpty: true, name: 'source', useDefaultExcludes: false
         script {
           dir("${BASE_DIR}"){
-            env.GO_VERSION = readFile(".go-version").trim()
             def regexps =[
               "^_beats.*",
               "^apm-server.yml",
@@ -75,10 +75,14 @@ pipeline {
               "^tests/packaging.*",
               "^vendor/github.com/elastic/beats.*"
             ]
+            withGoEnv(){
+              setEnvVar('APM_SERVER_VERSION', sh(label: 'Get beat version', script: 'make get-version', returnStdout: true)?.trim())
+            }
             env.BEATS_UPDATED = isGitRegionMatch(patterns: regexps)
-
             // Skip all the stages except docs for PR's with asciidoc changes only
-            env.ONLY_DOCS = isGitRegionMatch(patterns: [ '.*\\.asciidoc' ], comparator: 'regexp', shouldMatchAll: true)
+            whenTrue(isPR()) {
+              setEnvVar('ONLY_DOCS', isGitRegionMatch(patterns: [ '.*\\.asciidoc' ], comparator: 'regexp', shouldMatchAll: true))
+            }
           }
         }
       }
@@ -95,7 +99,6 @@ pipeline {
       environment {
         PATH = "${env.PATH}:${env.WORKSPACE}/bin"
         HOME = "${env.WORKSPACE}"
-        GOPATH = "${env.WORKSPACE}"
       }
       when {
         beforeAgent true
@@ -109,7 +112,9 @@ pipeline {
           deleteDir()
           unstash 'source'
           dir("${BASE_DIR}"){
-            sh(label: 'Run intake', script: './script/jenkins/intake.sh')
+            withGoEnv(){
+              sh(label: 'Run intake', script: './.ci/scripts/intake.sh')
+            }
           }
         }
       }
@@ -133,11 +138,11 @@ pipeline {
             withGithubNotify(context: 'Build - Linux') {
               deleteDir()
               unstash 'source'
-              golang(){
-                dir(BASE_DIR){
+              dir(BASE_DIR){
+                withMageEnv(){
                   retry(2) { // Retry in case there are any errors to avoid temporary glitches
                     sleep randomNumber(min: 5, max: 10)
-                    sh(label: 'Linux build', script: './script/jenkins/build.sh')
+                    sh(label: 'Linux build', script: './.ci/scripts/build.sh')
                   }
                 }
               }
@@ -165,10 +170,12 @@ pipeline {
               deleteDir()
               unstash 'source'
               dir(BASE_DIR){
-                retry(2) { // Retry in case there are any errors to avoid temporary glitches
-                  sleep randomNumber(min: 5, max: 10)
-                  powershell(label: 'Windows build', script: '.\\script\\jenkins\\windows-build.ps1')
-                  powershell(label: 'Run Window tests', script: '.\\script\\jenkins\\windows-test.ps1')
+                withMageEnv(){
+                  retry(2) { // Retry in case there are any errors to avoid temporary glitches
+                    sleep randomNumber(min: 5, max: 10)
+                    powershell(label: 'Windows build', script: '.\\.ci\\scripts\\windows-build.ps1')
+                    powershell(label: 'Run Window tests', script: '.\\.ci\\scripts\\windows-test.ps1')
+                  }
                 }
               }
             }
@@ -185,7 +192,7 @@ pipeline {
         Build on a mac environment.
         */
         stage('OSX build-test') {
-          agent { label 'macosx' }
+          agent { label 'macosx && x86_64' }
           options {
             skipDefaultCheckout()
             warnError('OSX execution failed')
@@ -205,10 +212,12 @@ pipeline {
               deleteDir()
               unstash 'source'
               dir(BASE_DIR){
-                retry(2) { // Retry in case there are any errors to avoid temporary glitches
-                  sleep randomNumber(min: 5, max: 10)
-                  sh(label: 'OSX build', script: '.ci/scripts/build-darwin.sh')
-                  sh(label: 'Run Unit tests', script: '.ci/scripts/test-darwin.sh')
+                withMageEnv(){
+                  retry(2) { // Retry in case there are any errors to avoid temporary glitches
+                    sleep randomNumber(min: 5, max: 10)
+                    sh(label: 'OSX build', script: '.ci/scripts/build-darwin.sh')
+                    sh(label: 'Run Unit tests', script: '.ci/scripts/test-darwin.sh')
+                  }
                 }
               }
             }
@@ -216,6 +225,42 @@ pipeline {
           post {
             always {
               junit(allowEmptyResults: true, keepLongStdio: true, testResults: "${BASE_DIR}/build/junit-*.xml")
+            }
+          }
+        }
+        stage('ARM build-test') {
+          agent { label 'arm' }
+          options {
+            skipDefaultCheckout()
+            warnError('ARM execution failed')
+          }
+          when {
+            beforeAgent true
+            allOf {
+              expression { return params.arm_ci }
+              expression { return env.ONLY_DOCS == "false" }
+            }
+          }
+          environment {
+            HOME = "${env.WORKSPACE}"
+          }
+          steps {
+            withGithubNotify(context: 'Build-Test - ARM') {
+              deleteDir()
+              unstash 'source'
+              dir("${BASE_DIR}"){
+                withMageEnv(){
+                  sh(label: 'ARM build', script: '.ci/scripts/build.sh')
+                  sh(label: 'ARM Unit tests', script: './.ci/scripts/unit-test.sh')
+                }
+              }
+            }
+          }
+          post {
+            always {
+              dir("${BASE_DIR}/build"){
+                junit(allowEmptyResults: true, keepLongStdio: true, testResults: "junit-*.xml")
+              }
             }
           }
         }
@@ -228,7 +273,6 @@ pipeline {
           environment {
             PATH = "${env.PATH}:${env.WORKSPACE}/bin"
             HOME = "${env.WORKSPACE}"
-            GOPATH = "${env.WORKSPACE}"
           }
           when {
             beforeAgent true
@@ -242,19 +286,23 @@ pipeline {
               deleteDir()
               unstash 'source'
               dir("${BASE_DIR}"){
-                sh(label: 'Run Unit tests', script: './script/jenkins/unit-test.sh')
+                withMageEnv(){
+                  sh(label: 'Run Unit tests', script: './.ci/scripts/unit-test.sh')
+                }
               }
             }
           }
           post {
             always {
-              coverageReport("${BASE_DIR}/build/coverage")
-              junit(allowEmptyResults: true,
-                keepLongStdio: true,
-                testResults: "${BASE_DIR}/build/junit-*.xml"
-              )
-              catchError(buildResult: 'SUCCESS', message: 'Failed to grab test results tar files', stageResult: 'SUCCESS') {
-                tar(file: "coverage-files.tgz", archive: true, dir: "coverage", pathPrefix: "${BASE_DIR}/build")
+              dir("${BASE_DIR}/build"){
+                coverageReport("coverage")
+                junit(allowEmptyResults: true,
+                  keepLongStdio: true,
+                  testResults: "junit-*.xml"
+                )
+                catchError(buildResult: 'SUCCESS', message: 'Failed to grab test results tar files', stageResult: 'SUCCESS') {
+                  tar(file: "coverage-files.tgz", archive: true, dir: "coverage")
+                }
               }
               codecov(repo: env.REPO, basedir: "${BASE_DIR}", secret: "${CODECOV_SECRET}")
             }
@@ -270,7 +318,6 @@ pipeline {
           environment {
             PATH = "${env.PATH}:${env.WORKSPACE}/bin"
             HOME = "${env.WORKSPACE}"
-            GOPATH = "${env.WORKSPACE}"
           }
           when {
             beforeAgent true
@@ -284,23 +331,26 @@ pipeline {
               deleteDir()
               unstash 'source'
               dir("${BASE_DIR}"){
-                sh(label: 'Run Linux tests', script: './script/jenkins/linux-test.sh')
+                withMageEnv(){
+                  sh(label: 'Run Linux tests', script: './.ci/scripts/linux-test.sh')
+                }
               }
             }
           }
           post {
             always {
-              dir("${BASE_DIR}"){
+              dir("${BASE_DIR}/build"){
                 archiveArtifacts(allowEmptyArchive: true,
                   artifacts: "docker-info/**",
-                  defaultExcludes: false)
-                  junit(allowEmptyResults: true,
-                    keepLongStdio: true,
-                    testResults: "**/build/TEST-*.xml"
-                  )
-              }
-              catchError(buildResult: 'SUCCESS', message: 'Failed to grab test results tar files', stageResult: 'SUCCESS') {
-                tar(file: "system-tests-linux-files.tgz", archive: true, dir: "system-tests", pathPrefix: "${BASE_DIR}/build")
+                  defaultExcludes: false
+                )
+                junit(allowEmptyResults: true,
+                  keepLongStdio: true,
+                  testResults: "**/TEST-*.xml"
+                )
+                catchError(buildResult: 'SUCCESS', message: 'Failed to grab test results tar files', stageResult: 'SUCCESS') {
+                  tar(file: "system-tests-linux-files.tgz", archive: true, dir: "system-tests")
+                }
               }
             }
           }
@@ -330,12 +380,12 @@ pipeline {
             withGithubNotify(context: 'Benchmarking') {
               deleteDir()
               unstash 'source'
-              golang(){
-                dir("${BASE_DIR}"){
-                  sh(label: 'Run benchmarks', script: './script/jenkins/bench.sh')
-                  sendBenchmarks(file: 'bench.out', index: "benchmark-server")
+              dir("${BASE_DIR}"){
+                withMageEnv(){
+                  sh(label: 'Run benchmarks', script: './.ci/scripts/bench.sh')
                 }
               }
+              sendBenchmarks(file: "${BASE_DIR}/bench.out", index: "benchmark-server")
             }
           }
         }
@@ -348,7 +398,6 @@ pipeline {
           environment {
             PATH = "${env.PATH}:${env.WORKSPACE}/bin"
             HOME = "${env.WORKSPACE}"
-            GOPATH = "${env.WORKSPACE}"
           }
           when {
             beforeAgent true
@@ -362,8 +411,10 @@ pipeline {
               deleteDir()
               unstash 'source'
               dir("${BASE_DIR}"){
-                catchError(buildResult: 'SUCCESS', message: 'Sync Kibana is not updated', stageResult: 'UNSTABLE') {
-                  sh(label: 'Test Sync', script: './script/jenkins/sync.sh')
+                withMageEnv(){
+                  catchError(buildResult: 'SUCCESS', message: 'Sync Kibana is not updated', stageResult: 'UNSTABLE') {
+                    sh(label: 'Test Sync', script: './.ci/scripts/sync.sh')
+                  }
                 }
               }
             }
@@ -374,16 +425,16 @@ pipeline {
           options { skipDefaultCheckout() }
           when {
             beforeAgent true
-            expression { return env.GITHUB_COMMENT?.contains('hey-apm tests') }
+            expression { return env.GITHUB_COMMENT?.contains('hey-apm tests') || env.GITHUB_COMMENT?.contains('/hey-apm')}
           }
           steps {
             withGithubNotify(context: 'Hey-Apm') {
               deleteDir()
               unstash 'source'
-              golang(){
-                dockerLogin(secret: env.DOCKER_SECRET, registry: env.DOCKER_REGISTRY)
-                dir("${BASE_DIR}"){
-                  sh(label: 'Package & Push', script: "./script/jenkins/package-docker-snapshot.sh ${env.GIT_BASE_COMMIT} ${env.DOCKER_IMAGE}")
+              dockerLogin(secret: env.DOCKER_SECRET, registry: env.DOCKER_REGISTRY)
+              dir("${BASE_DIR}"){
+                withMageEnv(){
+                  sh(label: 'Package & Push', script: "./.ci/scripts/package-docker-snapshot.sh ${env.GIT_BASE_COMMIT} ${env.DOCKER_IMAGE}")
                 }
               }
               build(job: 'apm-server/apm-hey-test-benchmark', propagate: true, wait: true,
@@ -399,7 +450,6 @@ pipeline {
           environment {
             PATH = "${env.PATH}:${env.WORKSPACE}/bin"
             HOME = "${env.WORKSPACE}"
-            GOPATH = "${env.WORKSPACE}"
             SNAPSHOT = "true"
           }
           when {
@@ -407,6 +457,14 @@ pipeline {
             allOf {
               expression { return params.release_ci }
               expression { return env.ONLY_DOCS == "false" }
+              anyOf {
+                branch 'master'
+                branch pattern: '\\d+\\.\\d+', comparator: 'REGEXP'
+                tag pattern: 'v\\d+\\.\\d+\\.\\d+.*', comparator: 'REGEXP'
+                expression { return isPR() && env.BEATS_UPDATED != "false" }
+                expression { return env.GITHUB_COMMENT?.contains('package tests') || env.GITHUB_COMMENT?.contains('/package')}
+                expression { return params.Run_As_Master_Branch }
+              }
             }
           }
           stages {
@@ -415,31 +473,32 @@ pipeline {
                 withGithubNotify(context: 'Package') {
                   deleteDir()
                   unstash 'source'
-                  golang(){
-                    dir("${BASE_DIR}"){
-                      sh(label: 'Build packages', script: './script/jenkins/package.sh')
-                      sh(label: 'Test packages install', script: './script/jenkins/test-install-packages.sh')
+                  dir("${BASE_DIR}"){
+                    withMageEnv(){
+                      sh(label: 'Build packages', script: './.ci/scripts/package.sh')
+                      sh(label: 'Test packages install', script: './.ci/scripts/test-install-packages.sh')
                       dockerLogin(secret: env.DOCKER_SECRET, registry: env.DOCKER_REGISTRY)
-                      sh(label: 'Package & Push', script: "./script/jenkins/package-docker-snapshot.sh ${env.GIT_BASE_COMMIT} ${env.DOCKER_IMAGE}")
+                      sh(label: 'Package & Push', script: "./.ci/scripts/package-docker-snapshot.sh ${env.GIT_BASE_COMMIT} ${env.DOCKER_IMAGE}")
                     }
                   }
                 }
               }
             }
             stage('Publish') {
-              when {
-                beforeAgent true
-                anyOf {
-                  branch 'master'
-                  branch pattern: '\\d+\\.\\d+', comparator: 'REGEXP'
-                  branch pattern: 'v\\d?', comparator: 'REGEXP'
-                  tag pattern: 'v\\d+\\.\\d+\\.\\d+.*', comparator: 'REGEXP'
-                  expression { return params.Run_As_Master_Branch }
-                  expression { return env.BEATS_UPDATED != "false" }
-                }
+              environment {
+                BUCKET_URI = """${isPR() ? "gs://${JOB_GCS_BUCKET}/pull-requests/pr-${env.CHANGE_ID}" : "gs://${JOB_GCS_BUCKET}/snapshots"}"""
               }
               steps {
-                googleStorageUpload(bucket: "gs://${JOB_GCS_BUCKET}/snapshots",
+                // Upload files to the default location
+                googleStorageUpload(bucket: "${BUCKET_URI}",
+                  credentialsId: "${JOB_GCS_CREDENTIALS}",
+                  pathPrefix: "${BASE_DIR}/build/distributions/",
+                  pattern: "${BASE_DIR}/build/distributions/**/*",
+                  sharedPublicly: true,
+                  showInline: true)
+
+                // Copy those files to another location with the sha commit to test them afterward.
+                googleStorageUpload(bucket: "gs://${JOB_GCS_BUCKET}/commits/${env.GIT_BASE_COMMIT}",
                   credentialsId: "${JOB_GCS_CREDENTIALS}",
                   pathPrefix: "${BASE_DIR}/build/distributions/",
                   pattern: "${BASE_DIR}/build/distributions/**/*",
@@ -483,21 +542,17 @@ pipeline {
     }
   }
   post {
+    success {
+      writeFile(file: 'beats-tester.properties',
+                text: """\
+                ## To be consumed by the beats-tester pipeline
+                COMMIT=${env.GIT_BASE_COMMIT}
+                APM_URL_BASE=https://storage.googleapis.com/${env.JOB_GCS_BUCKET}/commits/${env.GIT_BASE_COMMIT}
+                VERSION=${env.APM_SERVER_VERSION}-SNAPSHOT""".stripIndent()) // stripIdent() requires '''/
+      archiveArtifacts artifacts: 'beats-tester.properties'
+    }
     cleanup {
       notifyBuildResult()
     }
   }
-}
-
-def golang(Closure body){
-  def golangDocker
-  retry(3) { // Retry in case there are any errors when building the docker images (to avoid temporary glitches)
-    sleep randomNumber(min: 2, max: 5)
-    golangDocker = docker.build('golang-mage', "--build-arg GO_VERSION=${GO_VERSION} -f  ${BASE_DIR}/.ci/docker/golang-mage/Dockerfile ${BASE_DIR}")
-  }
-  withEnv(["HOME=${WORKSPACE}", "GOPATH=${WORKSPACE}", "SHELL=/bin/bash"]) {
-     golangDocker.inside('-v /usr/bin/docker:/usr/bin/docker -v /var/run/docker.sock:/var/run/docker.sock'){
-       body()
-     }
-   }
 }
