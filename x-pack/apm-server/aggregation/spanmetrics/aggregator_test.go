@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package spanmetrics
 
@@ -28,7 +28,7 @@ func BenchmarkAggregateSpan(b *testing.B) {
 	span := makeSpan("test_service", "agent", "test_destination", "success", time.Second, 1)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			agg.ProcessBatch(context.Background(), &model.Batch{span})
+			_ = agg.ProcessBatch(context.Background(), &model.Batch{span})
 		}
 	})
 }

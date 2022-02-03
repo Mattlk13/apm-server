@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -41,20 +42,51 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"github.com/gofrs/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
-	"github.com/elastic/go-elasticsearch/v7"
+	"github.com/elastic/go-elasticsearch/v8"
 )
 
 const (
 	startContainersTimeout = 5 * time.Minute
-
-	fleetServerPort = "8220"
 )
+
+var (
+	containerReaper         *testcontainers.Reaper
+	initContainerReaperOnce sync.Once
+)
+
+// InitContainerReaper initialises the testcontainers container reaper,
+// which will ensure all containers started by testcontainers are removed
+// after some time if they are left running when the systemtest process
+// exits.
+func initContainerReaper() {
+	dockerProvider, err := testcontainers.NewDockerProvider()
+	if err != nil {
+		panic(err)
+	}
+
+	sessionUUID := uuid.Must(uuid.NewV4())
+	containerReaper, err = testcontainers.NewReaper(
+		context.Background(),
+		sessionUUID.String(),
+		dockerProvider,
+		testcontainers.ReaperDefaultImage,
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	// The connection will be closed on exit.
+	if _, err = containerReaper.Connect(); err != nil {
+		panic(err)
+	}
+}
 
 // StartStackContainers starts Docker containers for Elasticsearch and Kibana.
 //
@@ -104,8 +136,15 @@ func NewUnstartedElasticsearchContainer() (*ElasticsearchContainer, error) {
 	req := testcontainers.ContainerRequest{
 		Image:      container.Image,
 		AutoRemove: true,
+		SkipReaper: true, // we use our own reaping logic
 	}
 	req.WaitingFor = wait.ForHTTP("/").WithPort("9200/tcp")
+
+	initContainerReaperOnce.Do(initContainerReaper)
+	req.Labels = make(map[string]string)
+	for k, v := range containerReaper.Labels() {
+		req.Labels[k] = v
+	}
 
 	for port := range containerDetails.Config.ExposedPorts {
 		req.ExposedPorts = append(req.ExposedPorts, string(port))
@@ -273,30 +312,22 @@ func NewUnstartedElasticAgentContainer() (*ElasticAgentContainer, error) {
 		return nil, err
 	}
 
-	var fleetServerIPAddress string
 	var networks []string
-	for network, settings := range fleetServerContainerDetails.NetworkSettings.Networks {
+	for network := range fleetServerContainerDetails.NetworkSettings.Networks {
 		networks = append(networks, network)
-		if fleetServerIPAddress == "" && settings.IPAddress != "" {
-			fleetServerIPAddress = settings.IPAddress
-		}
-	}
-	fleetServerURL := &url.URL{
-		Scheme: "https",
-		Host:   net.JoinHostPort(fleetServerIPAddress, fleetServerPort),
 	}
 	containerCACertPath := "/etc/pki/tls/certs/fleet-ca.pem"
-	hostCACertPath, err := filepath.Abs("../testing/docker/fleet-server/ca.pem")
-	if err != nil {
-		return nil, err
-	}
 
-	// Use the same stack version as used for fleet-server.
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		panic("could not locate systemtest directory")
+	}
+	systemtestDir := filepath.Dir(filename)
+	hostCACertPath := filepath.Join(systemtestDir, "../testing/docker/fleet-server/ca.pem")
+
+	// Use the same elastic-agent image as used for fleet-server.
 	agentImageVersion := fleetServerContainer.Image[strings.LastIndex(fleetServerContainer.Image, ":")+1:]
 	agentImage := "docker.elastic.co/beats/elastic-agent:" + agentImageVersion
-	if err := pullDockerImage(context.Background(), docker, agentImage); err != nil {
-		return nil, err
-	}
 	agentImageDetails, _, err := docker.ImageInspectWithRaw(context.Background(), agentImage)
 	if err != nil {
 		return nil, err
@@ -316,13 +347,15 @@ func NewUnstartedElasticAgentContainer() (*ElasticAgentContainer, error) {
 		Networks:   networks,
 		BindMounts: map[string]string{hostCACertPath: containerCACertPath},
 		Env: map[string]string{
-			"FLEET_URL": fleetServerURL.String(),
+			"FLEET_URL": "https://fleet-server:8220",
 			"FLEET_CA":  containerCACertPath,
 		},
+		SkipReaper: true, // we use our own reaping logic
 	}
 	return &ElasticAgentContainer{
-		request:      req,
-		StackVersion: agentImageVersion,
+		request: req,
+		exited:  make(chan struct{}),
+		Reap:    true,
 	}, nil
 }
 
@@ -330,10 +363,13 @@ func NewUnstartedElasticAgentContainer() (*ElasticAgentContainer, error) {
 type ElasticAgentContainer struct {
 	container testcontainers.Container
 	request   testcontainers.ContainerRequest
+	exited    chan struct{}
 
-	// StackVersion holds the stack version of the container image,
-	// e.g. 8.0.0-SNAPSHOT.
-	StackVersion string
+	// Reap entrols whether the container will be automatically reaped if
+	// the controlling process exits. This is true by default, and may be
+	// set to false before the container is started to prevent the container
+	// from being stoped and removed.
+	Reap bool
 
 	// ExposedPorts holds an optional list of ports to expose to the host.
 	ExposedPorts []string
@@ -349,6 +385,14 @@ type ElasticAgentContainer struct {
 	// use for enrolling the agent with Fleet. The agent will only enroll
 	// if this is specified.
 	FleetEnrollmentToken string
+
+	// Stdout, if non-nil, holds a writer to which the container's stdout
+	// will be written.
+	Stdout io.Writer
+
+	// Stderr, if non-nil, holds a writer to which the container's stderr
+	// will be written.
+	Stderr io.Writer
 }
 
 // Start starts the container.
@@ -368,6 +412,13 @@ func (c *ElasticAgentContainer) Start() error {
 	}
 	c.request.ExposedPorts = c.ExposedPorts
 	c.request.WaitingFor = c.WaitingFor
+	if c.Reap {
+		initContainerReaperOnce.Do(initContainerReaper)
+		c.request.Labels = make(map[string]string)
+		for k, v := range containerReaper.Labels() {
+			c.request.Labels[k] = v
+		}
+	}
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: c.request,
@@ -377,9 +428,29 @@ func (c *ElasticAgentContainer) Start() error {
 	}
 	c.container = container
 
-	if err := container.Start(ctx); err != nil {
-		return err
+	// Start a goroutine to read logs, and signal when the container process has exited.
+	if c.Stdout != nil || c.Stderr != nil {
+		go func() {
+			defer close(c.exited)
+			defer cancel()
+			stdout, stderr := c.Stdout, c.Stderr
+			if stdout == nil {
+				stdout = io.Discard
+			}
+			if stderr == nil {
+				stderr = io.Discard
+			}
+			_ = c.copyLogs(stdout, stderr)
+		}()
 	}
+
+	if err := container.Start(ctx); err != nil {
+		if err != context.Canceled {
+			return fmt.Errorf("failed to start container: %w", err)
+		}
+		return errors.New("failed to start container")
+	}
+
 	if len(c.request.ExposedPorts) > 0 {
 		hostIP, err := container.Host(ctx)
 		if err != nil {
@@ -399,6 +470,41 @@ func (c *ElasticAgentContainer) Start() error {
 	return nil
 }
 
+func (c *ElasticAgentContainer) copyLogs(stdout, stderr io.Writer) error {
+	// Wait for the container to be running (or have gone past that),
+	// or ContainerLogs will return immediately.
+	ctx := context.Background()
+	for {
+		state, err := c.container.State(ctx)
+		if err != nil {
+			return err
+		}
+		if state.Status != "created" {
+			break
+		}
+	}
+
+	docker, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		return err
+	}
+	defer docker.Close()
+
+	options := types.ContainerLogsOptions{
+		ShowStdout: stdout != nil,
+		ShowStderr: stderr != nil,
+		Follow:     true,
+	}
+	rc, err := docker.ContainerLogs(ctx, c.container.GetContainerID(), options)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	_, err = stdcopy.StdCopy(stdout, stderr, rc)
+	return err
+}
+
 // Close terminates and removes the container.
 func (c *ElasticAgentContainer) Close() error {
 	if c.container == nil {
@@ -407,14 +513,14 @@ func (c *ElasticAgentContainer) Close() error {
 	return c.container.Terminate(context.Background())
 }
 
-// Logs returns an io.ReadCloser that can be used for reading the
-// container's combined stdout/stderr log. If the container has not
-// been created by Start(), Logs will return an error.
-func (c *ElasticAgentContainer) Logs(ctx context.Context) (io.ReadCloser, error) {
-	if c.container == nil {
-		return nil, errors.New("container not created")
+// Wait waits for the container process to exit, and returns its state.
+func (c *ElasticAgentContainer) Wait(ctx context.Context) (*types.ContainerState, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.exited:
+		return c.container.State(ctx)
 	}
-	return c.container.Logs(ctx)
 }
 
 // Exec executes a command in the container, and returns its stdout and stderr.
@@ -454,16 +560,6 @@ func (c *ElasticAgentContainer) Exec(ctx context.Context, cmd ...string) (stdout
 		return nil, nil, fmt.Errorf("process exited with code %d", execResp.ExitCode)
 	}
 	return stdoutBuf.Bytes(), stderrBuf.Bytes(), nil
-}
-
-func pullDockerImage(ctx context.Context, docker *client.Client, imageRef string) error {
-	rc, err := docker.ImagePull(context.Background(), imageRef, types.ImagePullOptions{})
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	_, err = io.Copy(ioutil.Discard, rc)
-	return err
 }
 
 func matchFleetServerAPIStatusHealthy(r io.Reader) bool {

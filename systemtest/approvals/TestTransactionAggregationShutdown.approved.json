@@ -6,16 +6,23 @@
             "agent": {
                 "name": "go"
             },
+            "data_stream.dataset": "apm.internal",
+            "data_stream.namespace": "default",
+            "data_stream.type": "metrics",
             "ecs": {
                 "version": "dynamic"
             },
             "event": {
+                "agent_id_status": "missing",
                 "ingested": "dynamic",
-                "outcome": "unknown"
+                "outcome": "success"
             },
             "host": {
                 "hostname": "beowulf",
-                "name": "beowulf"
+                "name": "beowulf",
+                "os": {
+                    "platform": "minix"
+                }
             },
             "metricset.name": "transaction",
             "observer": {
@@ -31,13 +38,21 @@
                 "name": "metric"
             },
             "service": {
+                "language": {
+                    "name": "go",
+                    "version": "2.0"
+                },
                 "name": "systemtest",
                 "node": {
                     "name": "beowulf"
+                },
+                "runtime": {
+                    "name": "gc",
+                    "version": "2.0"
                 }
             },
             "timeseries": {
-                "instance": "systemtest:name:813c266c38717bab"
+                "instance": "systemtest:name:c1872fbd92d36ba2"
             },
             "transaction": {
                 "duration.histogram": {

@@ -35,16 +35,28 @@ import (
 	"github.com/elastic/apm-server/publish"
 )
 
-const dataset = "firehose"
+const dataset = "apm.firehose"
 
 type record struct {
 	Data string `json:"data"`
 }
 
-type firehoseLog struct {
+type firehose struct {
 	RequestID string   `json:"requestId"`
 	Timestamp int64    `json:"timestamp"`
 	Records   []record `json:"records"`
+}
+
+type cloudwatchMetric struct {
+	AccountID        string             `json:"account_id"`
+	Dimensions       map[string]string  `json:"dimensions"`
+	MetricName       string             `json:"metric_name"`
+	MetricStreamName string             `json:"metric_stream_name"`
+	Namespace        string             `json:"namespace"`
+	Region           string             `json:"region"`
+	Timestamp        int64              `json:"timestamp"`
+	Unit             string             `json:"unit"`
+	Value            map[string]float64 `json:"value"`
 }
 
 type result struct {
@@ -67,7 +79,7 @@ type arn struct {
 	Resource  string
 }
 
-// Authenticator provides provides authentication and authorization support.
+// Authenticator provides authentication and authorization support.
 type Authenticator interface {
 	Authenticate(ctx context.Context, kind, token string) (auth.AuthenticationDetails, auth.Authorizer, error)
 }
@@ -100,7 +112,7 @@ func Handler(processor model.BatchProcessor, authenticator Authenticator) reques
 			}
 		}
 
-		var firehose firehoseLog
+		var firehose firehose
 		err = json.NewDecoder(c.Request.Body).Decode(&firehose)
 		if err != nil {
 			return nil, err
@@ -108,7 +120,7 @@ func Handler(processor model.BatchProcessor, authenticator Authenticator) reques
 
 		// convert firehose log to events
 		baseEvent := requestMetadata(c)
-		batch, err := processFirehoseLog(firehose, baseEvent)
+		batch, err := processFirehose(firehose, baseEvent)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +170,7 @@ func (e requestError) Error() string {
 	return e.err.Error()
 }
 
-func processFirehoseLog(firehose firehoseLog, baseEvent model.APMEvent) (model.Batch, error) {
+func processFirehose(firehose firehose, baseEvent model.APMEvent) (model.Batch, error) {
 	var batch model.Batch
 	for _, record := range firehose.Records {
 		event := baseEvent
@@ -172,13 +184,59 @@ func processFirehoseLog(firehose firehoseLog, baseEvent model.APMEvent) (model.B
 			if line == "" {
 				break
 			}
-			event.Timestamp = time.Unix(firehose.Timestamp/1000, 0)
-			event.Processor = model.LogProcessor
-			event.Message = line
+
+			var cwMetric cloudwatchMetric
+			err = json.Unmarshal([]byte(line), &cwMetric)
+			if err == nil && cwMetric.MetricStreamName != "" {
+				event = processMetrics(event, cwMetric)
+			} else {
+				event = processLogs(event, firehose, line)
+			}
 			batch = append(batch, event)
 		}
 	}
 	return batch, nil
+}
+
+func processMetrics(event model.APMEvent, cwMetric cloudwatchMetric) model.APMEvent {
+	event.Processor = model.MetricsetProcessor
+	event.DataStream.Type = datastreams.MetricsType
+	event.Timestamp = time.Unix(cwMetric.Timestamp/1000, 0)
+	event.Cloud.AccountID = cwMetric.AccountID
+	event.Cloud.Region = cwMetric.Region
+	event.Cloud.ServiceName = cwMetric.Namespace
+
+	namespace := strings.ToLower(cwMetric.Namespace)
+	namespace = strings.ReplaceAll(namespace, "/", ".")
+	event.DataStream.Dataset = dataset + "-" + namespace
+
+	if event.Labels == nil {
+		event.Labels = make(model.Labels)
+	}
+	for k, v := range cwMetric.Dimensions {
+		event.Labels.Set(k, v)
+	}
+
+	var metricset model.Metricset
+	metricset.Name = namespace
+
+	samples := map[string]model.MetricsetSample{}
+	for k, v := range cwMetric.Value {
+		// TODO: handle units for CloudWatch metrics
+		samples[cwMetric.MetricName+"."+k] = model.MetricsetSample{Value: v}
+	}
+	metricset.Samples = samples
+	event.Metricset = &metricset
+	return event
+}
+
+func processLogs(event model.APMEvent, firehose firehose, logLine string) model.APMEvent {
+	event.DataStream.Dataset = dataset
+	event.Processor = model.LogProcessor
+	event.DataStream.Type = datastreams.LogsType
+	event.Timestamp = time.Unix(firehose.Timestamp/1000, 0)
+	event.Message = logLine
+	return event
 }
 
 func requestMetadata(c *request.Context) model.APMEvent {
@@ -196,10 +254,6 @@ func requestMetadata(c *request.Context) model.APMEvent {
 	serviceOrigin.ID = arnString
 	serviceOrigin.Name = arnParsed.Resource
 	event.Service.Origin = serviceOrigin
-
-	// Set data stream type and dataset fields for Firehose
-	event.DataStream.Type = datastreams.LogsType
-	event.DataStream.Dataset = dataset
 	return event
 }
 

@@ -164,17 +164,15 @@ func TestBeatsConfigSynced(t *testing.T) {
 	}
 
 	knownUnhandled := []string{
-		"backoff",
 		"bulk_max_size",
-		"compression_level",
 		"escape_html",
 		// TODO Kerberos auth (https://github.com/elastic/apm-server/issues/3794)
 		"kerberos",
 		"loadbalance",
-		"max_retries",
 		"parameters",
 		"transport",
 		"non_indexable_policy",
+		"allow_older_versions",
 	}
 	for name := range libbeatStructFields {
 		assert.Contains(t, knownUnhandled, name)
