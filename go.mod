@@ -69,7 +69,7 @@ require (
 	golang.org/x/mod v0.5.1 // indirect
 	golang.org/x/net v0.0.0-20210929193557-e81a3d93ecf6
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	golang.org/x/sys v0.0.0-20211003122950-b1ebd4e1001c // indirect
+	golang.org/x/sys v0.1.0 // indirect
 	golang.org/x/time v0.0.0-20210611083556-38a9dc6acbc6
 	golang.org/x/tools v0.1.7
 	google.golang.org/genproto v0.0.0-20211001223012-bfb93cce50d9 // indirect
